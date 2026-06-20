@@ -2293,28 +2293,28 @@ static void SetupStyle() {
     c[ImGuiCol_ResizeGripHovered]    = MD3Style::Primary;
     c[ImGuiCol_ResizeGripActive]     = MD3Style::PrimaryLight;
 
-    s.WindowRounding    = Scale(14.0f);
-    s.ChildRounding     = Scale(10.0f);
-    s.FrameRounding     = Scale(8.0f);
-    s.PopupRounding     = Scale(10.0f);
-    s.GrabRounding      = Scale(6.0f);
-    s.ScrollbarRounding = Scale(6.0f);
-    s.TabRounding       = Scale(8.0f);
-    s.WindowPadding     = ImVec2(Scale(14), Scale(14));
-    s.FramePadding      = ImVec2(Scale(12), Scale(10));
-    s.ItemSpacing       = ImVec2(Scale(10), Scale(10));
-    s.ItemInnerSpacing  = ImVec2(Scale(8), Scale(6));
-    s.ScrollbarSize     = Scale(10.0f);
-    s.GrabMinSize       = Scale(18.0f);
+    s.WindowRounding    = Scale(20.0f);
+    s.ChildRounding     = Scale(14.0f);
+    s.FrameRounding     = Scale(12.0f);
+    s.PopupRounding     = Scale(14.0f);
+    s.GrabRounding      = Scale(10.0f);
+    s.ScrollbarRounding = Scale(10.0f);
+    s.TabRounding       = Scale(12.0f);
+    s.WindowPadding     = ImVec2(Scale(20), Scale(20));
+    s.FramePadding      = ImVec2(Scale(16), Scale(12));
+    s.ItemSpacing       = ImVec2(Scale(14), Scale(12));
+    s.ItemInnerSpacing  = ImVec2(Scale(10), Scale(8));
+    s.ScrollbarSize     = Scale(14.0f);
+    s.GrabMinSize       = Scale(24.0f);
     s.WindowBorderSize  = 0;
     s.ChildBorderSize   = 0;
     s.PopupBorderSize   = 0;
     s.FrameBorderSize   = 0;
     s.TabBorderSize     = 0;
-    s.IndentSpacing     = Scale(18.0f);
-    s.CellPadding       = ImVec2(Scale(6), Scale(4));
+    s.IndentSpacing     = Scale(24.0f);
+    s.CellPadding       = ImVec2(Scale(8), Scale(6));
 
-    s.WindowMinSize     = ImVec2(Scale(280), Scale(200));
+    s.WindowMinSize     = ImVec2(Scale(400), Scale(300));
     s.WindowTitleAlign  = ImVec2(0.5f, 0.5f);
     s.WindowMenuButtonPosition = ImGuiDir_None;
     s.ColorButtonPosition = ImGuiDir_Right;
@@ -2339,23 +2339,22 @@ static bool IsPointInIsland(float x, float y) {
     if (!g_Initialized) return false;
     if (g_ShowUI) return false;
     if (g_Island.pos.x < 0) return false;
-    float radius = Scale(26.0f);
-    float hitRadius = radius + Scale(12.0f);
+    float radius = Scale(32.0f);
+    float hitRadius = radius + Scale(16.0f);
     return IsPointInCircle(x, y, g_Island.pos, hitRadius);
 }
 
-// Draw Circular Floating Window Button (Draggable, Double-click to toggle)
+// Draw Circular Floating Window Button (Draggable, Single-click to toggle)
 static bool DrawDynamicIsland(bool* clicked) {
     ImGuiIO& io = ImGui::GetIO();
     ImDrawList* draw_list = ImGui::GetForegroundDrawList();
-    double now = ImGui::GetTime();
 
-    const float radius = Scale(26.0f);
-    const float hitRadius = radius + Scale(12.0f);
-    const float dragThreshold = Scale(10.0f);
+    const float radius = Scale(32.0f);
+    const float hitRadius = radius + Scale(16.0f);
+    const float dragThreshold = Scale(8.0f);
 
     if (g_Island.pos.x < 0) {
-        g_Island.pos = ImVec2(io.DisplaySize.x - radius - Scale(20.0f), Scale(80.0f));
+        g_Island.pos = ImVec2(io.DisplaySize.x - radius - Scale(30.0f), Scale(100.0f));
     }
 
     ImVec2 center = g_Island.pos;
@@ -2364,76 +2363,90 @@ static bool DrawDynamicIsland(bool* clicked) {
 
     *clicked = false;
 
-    if (inCircle && io.MouseClicked[0] && !g_Island.dragging) {
-        g_Island.dragStart = io.MousePos;
-        g_Island.dragOffset = ImVec2(io.MousePos.x - center.x, io.MousePos.y - center.y);
-        g_Island.dragStarted = false;
-        if (now - g_Island.lastClickTime < 0.35) {
-            *clicked = true;
-            g_Island.lastClickTime = 0.0;
-        } else {
-            g_Island.lastClickTime = now;
-        }
-    }
-
-    if (io.MouseDown[0]) {
-        float dx = io.MousePos.x - g_Island.dragStart.x;
-        float dy = io.MousePos.y - g_Island.dragStart.y;
-        float dist = sqrtf(dx*dx + dy*dy);
-
-        if (!g_Island.dragStarted && dist > dragThreshold) {
-            g_Island.dragStarted = true;
-            g_Island.dragging = true;
-        }
-
-        if (g_Island.dragging) {
-            g_Island.pos = ImVec2(io.MousePos.x - g_Island.dragOffset.x, io.MousePos.y - g_Island.dragOffset.y);
-            if (g_Island.pos.x < radius) g_Island.pos.x = radius;
-            if (g_Island.pos.x > io.DisplaySize.x - radius) g_Island.pos.x = io.DisplaySize.x - radius;
-            if (g_Island.pos.y < radius) g_Island.pos.y = radius;
-            if (g_Island.pos.y > io.DisplaySize.y - radius) g_Island.pos.y = io.DisplaySize.y - radius;
-        }
-    } else {
-        if (g_Island.dragging) {
-            g_Island.dragging = false;
+    // When UI is shown, DON'T process any mouse input for the island
+    if (!g_ShowUI) {
+        // Handle mouse down
+        if (inCircle && io.MouseClicked[0] && !g_Island.dragging) {
+            g_Island.dragStart = io.MousePos;
+            g_Island.dragOffset = ImVec2(io.MousePos.x - center.x, io.MousePos.y - center.y);
             g_Island.dragStarted = false;
         }
+
+        if (io.MouseDown[0]) {
+            float dx = io.MousePos.x - g_Island.dragStart.x;
+            float dy = io.MousePos.y - g_Island.dragStart.y;
+            float dist = sqrtf(dx*dx + dy*dy);
+
+            if (g_Island.dragStart.x >= 0 && !g_Island.dragStarted && dist > dragThreshold) {
+                g_Island.dragStarted = true;
+                g_Island.dragging = true;
+            }
+
+            if (g_Island.dragging) {
+                g_Island.pos = ImVec2(io.MousePos.x - g_Island.dragOffset.x, io.MousePos.y - g_Island.dragOffset.y);
+                if (g_Island.pos.x < radius) g_Island.pos.x = radius;
+                if (g_Island.pos.x > io.DisplaySize.x - radius) g_Island.pos.x = io.DisplaySize.x - radius;
+                if (g_Island.pos.y < radius) g_Island.pos.y = radius;
+                if (g_Island.pos.y > io.DisplaySize.y - radius) g_Island.pos.y = io.DisplaySize.y - radius;
+            }
+        } else {
+            // Mouse released
+            if (g_Island.dragging) {
+                g_Island.dragging = false;
+                g_Island.dragStarted = false;
+            } else if (g_Island.dragStart.x >= 0 && inCircle) {
+                // Single click (without dragging) toggles UI
+                *clicked = true;
+            }
+            g_Island.dragStart = ImVec2(-1, -1);
+        }
+    } else {
+        // UI is showing - reset drag state
+        g_Island.dragging = false;
+        g_Island.dragStarted = false;
+        g_Island.dragStart = ImVec2(-1, -1);
     }
 
     ImU32 colIdle    = ImGui::ColorConvertFloat4ToU32(MD3Style::IslandBgColor);
     ImU32 colHover   = ImGui::ColorConvertFloat4ToU32(ImVec4(
-        MD3Style::IslandBgColor.x * 1.1f,
-        MD3Style::IslandBgColor.y * 1.1f,
-        MD3Style::IslandBgColor.z * 1.1f,
-        0.95f
+        MD3Style::IslandBgColor.x * 1.15f,
+        MD3Style::IslandBgColor.y * 1.15f,
+        MD3Style::IslandBgColor.z * 1.15f,
+        1.0f
     ));
     ImU32 colPress   = ImGui::ColorConvertFloat4ToU32(ImVec4(
-        MD3Style::IslandBgColor.x * 0.85f,
-        MD3Style::IslandBgColor.y * 0.85f,
-        MD3Style::IslandBgColor.z * 0.85f,
-        0.95f
+        MD3Style::IslandBgColor.x * 0.8f,
+        MD3Style::IslandBgColor.y * 0.8f,
+        MD3Style::IslandBgColor.z * 0.8f,
+        1.0f
     ));
 
     ImU32 bgCol;
     float rAdd = 0.0f;
-    bool pressed = inCircle && io.MouseDown[0] && !g_Island.dragStarted;
+    bool pressed = inCircle && io.MouseDown[0] && !g_Island.dragStarted && !g_ShowUI;
     if (g_Island.dragging || pressed) {
         bgCol = colPress;
-        rAdd = Scale(2.0f);
-    } else if (inCircle) {
+        rAdd = Scale(3.0f);
+    } else if (inCircle && !g_ShowUI) {
         bgCol = colHover;
-        rAdd = Scale(1.0f);
+        rAdd = Scale(2.0f);
     } else {
         bgCol = colIdle;
     }
 
-    draw_list->AddCircleFilled(ImVec2(center.x, center.y + Scale(3.0f)), radius + rAdd, IM_COL32(0, 0, 0, 80), 48);
+    // Shadow
+    draw_list->AddCircleFilled(ImVec2(center.x, center.y + Scale(4.0f)), radius + rAdd, IM_COL32(0, 0, 0, 100), 48);
 
+    // Main circle
     draw_list->AddCircleFilled(center, radius + rAdd, bgCol, 48);
 
-    ImU32 borderCol = g_ShowUI ? IM_COL32((int)(MD3Style::Primary.x*255), (int)(MD3Style::Primary.y*255), (int)(MD3Style::Primary.z*255), 200) : IM_COL32(255,255,255,60);
-    draw_list->AddCircle(center, radius + rAdd, borderCol, 48, Scale(2.0f));
+    // Border
+    ImU32 borderCol = g_ShowUI ? 
+        IM_COL32((int)(MD3Style::Primary.x*255), (int)(MD3Style::Primary.y*255), (int)(MD3Style::Primary.z*255), 220) : 
+        IM_COL32(255,255,255,80);
+    draw_list->AddCircle(center, radius + rAdd, borderCol, 48, Scale(2.5f));
 
+    // Label
     if (g_FontIsland) {
         const char* label = "RF";
         ImVec2 ts = g_FontIsland->CalcTextSizeA(g_FontIsland->FontSize, FLT_MAX, 0.0f, label);
@@ -2465,31 +2478,31 @@ static void DrawUI() {
     }
 
     // ============================================
-    // Main Window - Tab-Based Layout
+    // Main Window - Tab-Based Layout (Larger Size)
     // ============================================
-    ImGui::SetNextWindowSize(ImVec2(460, 600), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(780, 900), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
     
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14, 14));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 20.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 6));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 24.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12, 10));
     ImGui::Begin("RenderFusion", &g_ShowUI, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse);
 
     // ============================================
     // Preset Buttons (Auto-size based on text)
     // ============================================
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 20.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(20, 10));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 24.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(28, 14));
     
     // Calculate button widths based on text
     ImVec2 originalTextSize = ImGui::CalcTextSize("Original");
     ImVec2 mangaTextSize = ImGui::CalcTextSize("Manga B&W");
-    float originalBtnWidth = originalTextSize.x + 40;  // Add padding
-    float mangaBtnWidth = mangaTextSize.x + 40;
+    float originalBtnWidth = originalTextSize.x + 56;  // Add padding
+    float mangaBtnWidth = mangaTextSize.x + 56;
     
     ImGui::PushStyleColor(ImGuiCol_Button, RF::current_preset == 0 ? MD3Style::Primary : MD3Style::SurfaceContainerHigh);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, RF::current_preset == 0 ? MD3Style::PrimaryLight : MD3Style::SurfaceContainerHighest);
-    if (ImGui::Button("Original", ImVec2(originalBtnWidth, 38))) {
+    if (ImGui::Button("Original", ImVec2(originalBtnWidth, 50))) {
         RF::current_preset = 0;
         RF::ApplyPreset(0);
         Config::SaveConfig();
@@ -2500,7 +2513,7 @@ static void DrawUI() {
     
     ImGui::PushStyleColor(ImGuiCol_Button, RF::current_preset == 1 ? MD3Style::Primary : MD3Style::SurfaceContainerHigh);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, RF::current_preset == 1 ? MD3Style::PrimaryLight : MD3Style::SurfaceContainerHighest);
-    if (ImGui::Button("Manga B&W", ImVec2(mangaBtnWidth, 38))) {
+    if (ImGui::Button("Manga B&W", ImVec2(mangaBtnWidth, 50))) {
         RF::current_preset = 1;
         RF::ApplyPreset(1);
         Config::SaveConfig();
@@ -2714,18 +2727,18 @@ static void DrawUI() {
     // ============================================
     // Bottom Buttons (Auto-size based on text)
     // ============================================
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 18.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(20, 10));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 22.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(28, 14));
     
     // Calculate button widths based on text
     ImVec2 saveTextSize = ImGui::CalcTextSize("Save Config");
     ImVec2 resetTextSize = ImGui::CalcTextSize("Reset All");
-    float saveBtnWidth = saveTextSize.x + 40;
-    float resetBtnWidth = resetTextSize.x + 40;
+    float saveBtnWidth = saveTextSize.x + 56;
+    float resetBtnWidth = resetTextSize.x + 56;
     
     ImGui::PushStyleColor(ImGuiCol_Button, MD3Style::Primary);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, MD3Style::PrimaryLight);
-    if (ImGui::Button("Save Config", ImVec2(saveBtnWidth, 38))) {
+    if (ImGui::Button("Save Config", ImVec2(saveBtnWidth, 50))) {
         Config::SaveConfig();
     }
     ImGui::PopStyleColor(2);
@@ -2734,7 +2747,7 @@ static void DrawUI() {
     
     ImGui::PushStyleColor(ImGuiCol_Button, MD3Style::SurfaceContainerHigh);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, MD3Style::SurfaceContainerHighest);
-    if (ImGui::Button("Reset All", ImVec2(resetBtnWidth, 38))) {
+    if (ImGui::Button("Reset All", ImVec2(resetBtnWidth, 50))) {
         RF::current_preset = 0;
         RF::ApplyPreset(0);
         Config::SaveConfig();
@@ -2771,10 +2784,10 @@ static void Setup() {
     cfg.OversampleH = cfg.OversampleV = 2;
     cfg.PixelSnapH = true;
 
-    g_FontIsland   = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(20.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
-    g_FontSubtitle = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(13.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
-    g_FontBody     = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(16.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
-    g_FontButton   = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(17.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
+    g_FontIsland   = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(28.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
+    g_FontSubtitle = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(18.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
+    g_FontBody     = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(22.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
+    g_FontButton   = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(24.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
     g_UIFont       = g_FontBody;
     if (g_FontBody) io.FontDefault = g_FontBody;
 
