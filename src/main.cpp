@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <cmath>
+#include <cfloat>
 #include <fstream>
 #include <nlohmann/json.hpp>
 
@@ -2421,8 +2422,10 @@ static bool DrawDynamicIsland(bool* clicked) {
     if (g_Island.dragging) {
         if (io.MouseDown[0]) {
             g_Island.pos = ImVec2(io.MousePos.x - g_Island.dragOffset.x, io.MousePos.y - g_Island.dragOffset.y);
-            g_Island.pos.x = ImClamp(g_Island.pos.x, radius, io.DisplaySize.x - radius);
-            g_Island.pos.y = ImClamp(g_Island.pos.y, radius, io.DisplaySize.y - radius);
+            if (g_Island.pos.x < radius) g_Island.pos.x = radius;
+            if (g_Island.pos.x > io.DisplaySize.x - radius) g_Island.pos.x = io.DisplaySize.x - radius;
+            if (g_Island.pos.y < radius) g_Island.pos.y = radius;
+            if (g_Island.pos.y > io.DisplaySize.y - radius) g_Island.pos.y = io.DisplaySize.y - radius;
         } else {
             g_Island.dragging = false;
         }
