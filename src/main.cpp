@@ -2293,26 +2293,26 @@ static void SetupStyle() {
     c[ImGuiCol_ResizeGripHovered]    = MD3Style::Primary;
     c[ImGuiCol_ResizeGripActive]     = MD3Style::PrimaryLight;
 
-    s.WindowRounding    = Scale(16.0f);
-    s.ChildRounding     = Scale(12.0f);
-    s.FrameRounding     = Scale(10.0f);
+    s.WindowRounding    = Scale(14.0f);
+    s.ChildRounding     = Scale(10.0f);
+    s.FrameRounding     = Scale(8.0f);
     s.PopupRounding     = Scale(10.0f);
-    s.GrabRounding      = Scale(8.0f);
-    s.ScrollbarRounding = Scale(8.0f);
-    s.TabRounding       = Scale(10.0f);
-    s.WindowPadding     = ImVec2(Scale(18), Scale(18));
-    s.FramePadding      = ImVec2(Scale(16), Scale(14));
-    s.ItemSpacing       = ImVec2(Scale(12), Scale(12));
-    s.ItemInnerSpacing  = ImVec2(Scale(10), Scale(8));
-    s.ScrollbarSize     = Scale(12.0f);
-    s.GrabMinSize       = Scale(20.0f);
+    s.GrabRounding      = Scale(6.0f);
+    s.ScrollbarRounding = Scale(6.0f);
+    s.TabRounding       = Scale(8.0f);
+    s.WindowPadding     = ImVec2(Scale(14), Scale(14));
+    s.FramePadding      = ImVec2(Scale(12), Scale(10));
+    s.ItemSpacing       = ImVec2(Scale(10), Scale(10));
+    s.ItemInnerSpacing  = ImVec2(Scale(8), Scale(6));
+    s.ScrollbarSize     = Scale(10.0f);
+    s.GrabMinSize       = Scale(18.0f);
     s.WindowBorderSize  = 0;
     s.ChildBorderSize   = 0;
     s.PopupBorderSize   = 0;
     s.FrameBorderSize   = 0;
     s.TabBorderSize     = 0;
-    s.IndentSpacing     = Scale(20.0f);
-    s.CellPadding       = ImVec2(Scale(8), Scale(6));
+    s.IndentSpacing     = Scale(18.0f);
+    s.CellPadding       = ImVec2(Scale(6), Scale(4));
 
     s.WindowMinSize     = ImVec2(Scale(280), Scale(200));
     s.WindowTitleAlign  = ImVec2(0.5f, 0.5f);
@@ -2339,18 +2339,18 @@ static bool IsPointInIsland(float x, float y) {
     if (!g_Initialized) return false;
     if (g_ShowUI) return false;
     if (g_Island.pos.x < 0) return false;
-    float radius = Scale(28.0f);
+    float radius = Scale(26.0f);
     float hitRadius = radius + Scale(12.0f);
     return IsPointInCircle(x, y, g_Island.pos, hitRadius);
 }
 
-// Draw Circular Floating Window Button (Draggable, Single-click to toggle)
+// Draw Circular Floating Window Button (Draggable, Double-click to toggle)
 static bool DrawDynamicIsland(bool* clicked) {
     ImGuiIO& io = ImGui::GetIO();
     ImDrawList* draw_list = ImGui::GetForegroundDrawList();
     double now = ImGui::GetTime();
 
-    const float radius = Scale(28.0f);
+    const float radius = Scale(26.0f);
     const float hitRadius = radius + Scale(12.0f);
     const float dragThreshold = Scale(10.0f);
 
@@ -2368,6 +2368,12 @@ static bool DrawDynamicIsland(bool* clicked) {
         g_Island.dragStart = io.MousePos;
         g_Island.dragOffset = ImVec2(io.MousePos.x - center.x, io.MousePos.y - center.y);
         g_Island.dragStarted = false;
+        if (now - g_Island.lastClickTime < 0.35) {
+            *clicked = true;
+            g_Island.lastClickTime = 0.0;
+        } else {
+            g_Island.lastClickTime = now;
+        }
     }
 
     if (io.MouseDown[0]) {
@@ -2391,8 +2397,6 @@ static bool DrawDynamicIsland(bool* clicked) {
         if (g_Island.dragging) {
             g_Island.dragging = false;
             g_Island.dragStarted = false;
-        } else if (inCircle && io.MouseReleased[0] && !g_Island.dragStarted) {
-            *clicked = true;
         }
     }
 
@@ -2423,7 +2427,7 @@ static bool DrawDynamicIsland(bool* clicked) {
         bgCol = colIdle;
     }
 
-    draw_list->AddCircleFilled(ImVec2(center.x, center.y + Scale(4.0f)), radius + rAdd, IM_COL32(0, 0, 0, 80), 48);
+    draw_list->AddCircleFilled(ImVec2(center.x, center.y + Scale(3.0f)), radius + rAdd, IM_COL32(0, 0, 0, 80), 48);
 
     draw_list->AddCircleFilled(center, radius + rAdd, bgCol, 48);
 
@@ -2447,7 +2451,7 @@ static void DrawUI() {
     ImGuiIO& io = ImGui::GetIO();
 
     // ============================================
-    // Circular Floating Button (Always visible, single-click to toggle)
+    // Circular Floating Button (Always visible, double-click to toggle)
     // ============================================
     bool clicked = false;
     DrawDynamicIsland(&clicked);
@@ -2697,63 +2701,6 @@ static void DrawUI() {
             ImGui::EndTabItem();
         }
 
-        // ============================================
-        // Theme Tab
-        // ============================================
-        if (ImGui::BeginTabItem("Theme")) {
-            ImGui::Spacing();
-            
-            // Accent Colors
-            ImGui::TextColored(MD3Style::OnSurfaceVariant, "Accent Color");
-            ImGui::Spacing();
-            
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 12.0f);
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12, 6));
-            
-            const char* color_names[] = {"Red", "Purple", "Blue", "Green", "Orange", "Pink", "Cyan", "Moon"};
-            for (int i = 0; i < 8; i++) {
-                bool selected = (MD3Style::CurrentScheme == i);
-                ImVec2 textSize = ImGui::CalcTextSize(color_names[i]);
-                float btnWidth = textSize.x + 24;
-                ImGui::PushStyleColor(ImGuiCol_Button, MD3Style::Schemes[i].primary);
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, MD3Style::Schemes[i].primaryLight);
-                
-                if (selected) {
-                    ImGui::PushStyleColor(ImGuiCol_Border, MD3Style::OnSurface);
-                    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f);
-                }
-                
-                if (ImGui::Button(color_names[i], ImVec2(btnWidth, 28))) {
-                    MD3Style::ApplyScheme(i);
-                    SetupStyle();
-                    Config::SaveConfig();
-                }
-                
-                if (selected) {
-                    ImGui::PopStyleVar();
-                    ImGui::PopStyleColor();
-                }
-                ImGui::PopStyleColor(2);
-                
-                if ((i + 1) % 4 != 0) ImGui::SameLine();
-            }
-            ImGui::PopStyleVar(2);
-            
-            ImGui::Spacing();
-            
-            // Island Color
-            ImGui::TextColored(MD3Style::OnSurfaceVariant, "Island Color");
-            ImGui::PushItemWidth(-1);
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
-            if (ImGui::ColorEdit4("##IslandColor", (float*)&MD3Style::IslandBgColor, ImGuiColorEditFlags_NoInputs)) {
-                Config::SaveConfig();
-            }
-            ImGui::PopStyleVar();
-            ImGui::PopItemWidth();
-            
-            ImGui::EndTabItem();
-        }
-
         ImGui::EndTabBar();
     }
     
@@ -2813,9 +2760,9 @@ static void Setup() {
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
 
-    g_DpiScale = (float)g_Width / 1080.0f;
-    if (g_DpiScale < 1.0f) g_DpiScale = 1.0f;
-    if (g_DpiScale > 3.0f) g_DpiScale = 3.0f;
+    g_DpiScale = (float)g_Height / 900.0f;
+    if (g_DpiScale < 0.85f) g_DpiScale = 0.85f;
+    if (g_DpiScale > 2.2f) g_DpiScale = 2.2f;
     g_FontScale = g_DpiScale;
 
     io.Fonts->Clear();
@@ -2824,15 +2771,16 @@ static void Setup() {
     cfg.OversampleH = cfg.OversampleV = 2;
     cfg.PixelSnapH = true;
 
-    g_FontIsland   = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(22.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
-    g_FontSubtitle = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(15.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
-    g_FontBody     = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(18.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
-    g_FontButton   = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(20.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
+    g_FontIsland   = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(20.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
+    g_FontSubtitle = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(13.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
+    g_FontBody     = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(16.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
+    g_FontButton   = io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(), (int)inter_medium.size(), Scale(17.0f), &cfg, io.Fonts->GetGlyphRangesDefault());
     g_UIFont       = g_FontBody;
     if (g_FontBody) io.FontDefault = g_FontBody;
 
     ImGui_ImplAndroid_Init(nullptr);
     ImGui_ImplOpenGL3_Init("#version 300 es");
+    MD3Style::ApplyScheme(0);
     SetupStyle();
     g_Initialized = true;
     LOGI("ImGui setup complete, DPI scale: %.2f", g_DpiScale);
