@@ -234,7 +234,7 @@ struct Connection {
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context ctr_drbg;
     int timeout_sec;
-    Connection() : https(false), timeout_sec(10) {
+    Connection() : https(false), timeout_sec(30) {
         mbedtls_net_init(&net);
         mbedtls_ssl_init(&ssl);
         mbedtls_ssl_config_init(&conf);
@@ -267,7 +267,8 @@ struct Connection {
                 if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
                     *err = "SSL handshake failed"; return ret;
                 }
-                if(++attempts > 100) { *err = "SSL handshake timeout"; return -1; }
+                if(++attempts > 3000) { *err = "SSL handshake timeout"; return -1; }
+                usleep(10000);
             }
             https = true;
         } else {
@@ -290,15 +291,30 @@ struct Connection {
         return (int)sent;
     }
     int RecvSome(void* buf, size_t len) {
+        int retries = 0;
         while(true){
             int n;
             if(https)n=mbedtls_ssl_read(&ssl,(unsigned char*)buf,len);
             else n=(int)recv(net.fd,buf,(int)len,0);
             if(n>0)return n;
             if(n==0)return 0;
-            if(https&&(n==MBEDTLS_ERR_SSL_WANT_READ||n==MBEDTLS_ERR_SSL_WANT_WRITE))continue;
-            if(!https&&n<0&&(errno==EINTR||errno==EAGAIN))continue;
-            return -1;
+            if(https){
+                if(n==MBEDTLS_ERR_SSL_WANT_READ||n==MBEDTLS_ERR_SSL_WANT_WRITE){
+                    if(++retries>500)return -1;
+                    usleep(10000);
+                    continue;
+                }
+                if(n==MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)return 0;
+                LOGE("SSL read error: -0x%x", -n);
+            }else{
+                if(n<0&&(errno==EINTR||errno==EAGAIN||errno==EWOULDBLOCK)){
+                    if(++retries>100)return -1;
+                    usleep(10000);
+                    continue;
+                }
+                LOGE("Socket recv error: %d", errno);
+            }
+            return n;
         }
     }
     void SetTimeout(int sec) {
@@ -336,14 +352,25 @@ static std::string DecodeChunked(const std::string& in){
 }
 
 std::string RequestRaw(const std::string& url,const std::string& method,const std::string& body,const std::string& key, const char** err, int* status_code) {
-    Url p=ParseUrl(url);
+    std::string fixed_url = url;
+    if(fixed_url.find("/chat/completions") == std::string::npos){
+        while(!fixed_url.empty()&&fixed_url.back()=='/')fixed_url.pop_back();
+        if(fixed_url.find("/v1")!=std::string::npos||fixed_url.find("api")!=std::string::npos){
+            if(fixed_url.back()=='1')fixed_url+="/chat/completions";
+            else fixed_url+="/v1/chat/completions";
+        }else{
+            fixed_url+="/v1/chat/completions";
+        }
+        LOGI("Auto-fixed API URL: %s -> %s", url.c_str(), fixed_url.c_str());
+    }
+    Url p=ParseUrl(fixed_url);
     LOGI("HTTP request: %s %s:%d%s (HTTPS=%d), body size=%d",method.c_str(),p.host.c_str(),p.port,p.path.c_str(),p.https?(int)1:0,(int)body.size());
     Connection conn;
     int ret = conn.Connect(p, err);
     if (ret != 0){LOGE("Connect failed: %s (ret=%d)",*err?*err:"unknown",ret);return "";}
     LOGI("Connected to %s:%d",p.host.c_str(),p.port);
     std::ostringstream req;
-    req<<method<<" "<<p.path<<" HTTP/1.0\r\nHost: "<<p.host;
+    req<<method<<" "<<p.path<<" HTTP/1.1\r\nHost: "<<p.host;
     if((!p.https&&p.port!=80)||(p.https&&p.port!=443))req<<":"<<p.port;
     req<<"\r\nContent-Type: application/json\r\nContent-Length: "<<body.size()<<"\r\n";
     if(!key.empty())req<<"Authorization: Bearer "<<key<<"\r\n";
