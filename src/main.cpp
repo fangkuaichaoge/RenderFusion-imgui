@@ -24,6 +24,13 @@
 #include <ctime>
 #include <nlohmann/json.hpp>
 
+#include "mbedtls/net_sockets.h"
+#include "mbedtls/ssl.h"
+#include "mbedtls/entropy.h"
+#include "mbedtls/ctr_drbg.h"
+#include "mbedtls/error.h"
+#include "mbedtls/x509_crt.h"
+
 #include "pl/Hook.h"
 #include "pl/Gloss.h"
 #include "ImGui/imgui.h"
@@ -107,28 +114,132 @@ std::mutex mtx;
 struct Url{std::string host;int port;std::string path;bool https;};
 Url ParseUrl(const std::string& u){
     Url p;p.https=false;p.port=80;p.path="/";size_t pos=0;
-    if(u.find("http://")==0){pos=7;p.port=80;}else if(u.find("https://")==0){pos=8;p.https=true;p.port=443;LOGW("HTTPS not directly supported");}
+    if(u.find("http://")==0){pos=7;p.port=80;}else if(u.find("https://")==0){pos=8;p.https=true;p.port=443;}
     size_t sp=u.find('/',pos);
     if(sp!=std::string::npos){p.host=u.substr(pos,sp-pos);p.path=u.substr(sp);}else p.host=u.substr(pos);
     size_t cp=p.host.find(':');if(cp!=std::string::npos){p.port=atoi(p.host.substr(cp+1).c_str());p.host=p.host.substr(0,cp);}
     return p;
 }
-std::string Request(const std::string& url,const std::string& method,const std::string& body,const std::string& key){
-    std::lock_guard<std::mutex> lk(mtx); Url p=ParseUrl(url);
-    int s=socket(AF_INET,SOCK_STREAM,0);if(s<0)return"";
-    hostent* srv=gethostbyname(p.host.c_str());if(!srv){close(s);return"";}
-    sockaddr_in addr;memset(&addr,0,sizeof(addr));addr.sin_family=AF_INET;addr.sin_port=htons(p.port);memcpy(&addr.sin_addr.s_addr,srv->h_addr,srv->h_length);
-    timeval tv;tv.tv_sec=30;tv.tv_usec=0;setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));setsockopt(s,SOL_SOCKET,SO_SNDTIMEO,&tv,sizeof(tv));
-    if(connect(s,(sockaddr*)&addr,sizeof(addr))<0){close(s);return"";}
-    std::ostringstream req;req<<method<<" "<<p.path<<" HTTP/1.1\r\nHost: "<<p.host;
-    if(p.port!=80&&p.port!=443)req<<":"<<p.port;
+
+struct Connection {
+    bool https;
+    mbedtls_net_context net;
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context ctr_drbg;
+    Connection() : https(false) {
+        mbedtls_net_init(&net);
+        mbedtls_ssl_init(&ssl);
+        mbedtls_ssl_config_init(&conf);
+        mbedtls_entropy_init(&entropy);
+        mbedtls_ctr_drbg_init(&ctr_drbg);
+    }
+    ~Connection() { Close(); }
+    int Connect(const Url& p, const char** err) {
+        *err = nullptr;
+        char port_str[8]; snprintf(port_str, sizeof(port_str), "%d", p.port);
+        int ret;
+        const char* pers = "DanmuGL";
+        ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char*)pers, strlen(pers));
+        if (ret != 0) { *err = "DRBG init failed"; return ret; }
+        ret = mbedtls_net_connect(&net, p.host.c_str(), port_str, MBEDTLS_NET_PROTO_TCP);
+        if (ret != 0) { *err = "Connect failed"; return ret; }
+        if (p.https) {
+            ret = mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
+            if (ret != 0) { *err = "SSL config failed"; return ret; }
+            mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+            mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
+            mbedtls_ssl_set_bio(&ssl, &net, mbedtls_net_send, mbedtls_net_recv, nullptr);
+            ret = mbedtls_ssl_setup(&ssl, &conf);
+            if (ret != 0) { *err = "SSL setup failed"; return ret; }
+            ret = mbedtls_ssl_set_hostname(&ssl, p.host.c_str());
+            if (ret != 0) { *err = "SSL hostname failed"; return ret; }
+            while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
+                if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+                    *err = "SSL handshake failed"; return ret;
+                }
+            }
+            https = true;
+        } else {
+            https = false;
+        }
+        return 0;
+    }
+    int Send(const void* buf, size_t len) {
+        if (https) return mbedtls_ssl_write(&ssl, (const unsigned char*)buf, len);
+        else return (int)send(net.fd, buf, len, 0);
+    }
+    int Recv(void* buf, size_t len) {
+        if (https) return mbedtls_ssl_read(&ssl, (unsigned char*)buf, len);
+        else return (int)recv(net.fd, buf, len, 0);
+    }
+    void SetTimeout(int sec) {
+        struct timeval tv;tv.tv_sec=sec;tv.tv_usec=0;
+        setsockopt(net.fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));
+        setsockopt(net.fd,SOL_SOCKET,SO_SNDTIMEO,&tv,sizeof(tv));
+    }
+    void Close() {
+        if (https) mbedtls_ssl_close_notify(&ssl);
+        mbedtls_net_free(&net);
+        mbedtls_ssl_free(&ssl);
+        mbedtls_ssl_config_free(&conf);
+        mbedtls_ctr_drbg_free(&ctr_drbg);
+        mbedtls_entropy_free(&entropy);
+    }
+};
+
+std::string RequestRaw(const std::string& url,const std::string& method,const std::string& body,const std::string& key, const char** err, int* status_code) {
+    Url p=ParseUrl(url);
+    Connection conn;
+    int ret = conn.Connect(p, err);
+    if (ret != 0) return "";
+    conn.SetTimeout(30);
+    std::ostringstream req;
+    req<<method<<" "<<p.path<<" HTTP/1.1\r\nHost: "<<p.host;
+    if((!p.https&&p.port!=80)||(p.https&&p.port!=443))req<<":"<<p.port;
     req<<"\r\nContent-Type: application/json\r\nContent-Length: "<<body.size()<<"\r\n";
     if(!key.empty())req<<"Authorization: Bearer "<<key<<"\r\n";
     req<<"Connection: close\r\n\r\n"<<body;
-    std::string rs=req.str();if(send(s,rs.c_str(),(int)rs.size(),0)<0){close(s);return"";}
+    std::string rs=req.str();
+    if(conn.Send(rs.c_str(),rs.size())<=0){conn.Close();if(err)*err="Send failed";return "";}
     std::string resp;char buf[4096];ssize_t n;
-    while((n=recv(s,buf,sizeof(buf)-1,0))>0){buf[n]=0;resp.append(buf,n);}
-    close(s);size_t he=resp.find("\r\n\r\n");return he!=std::string::npos?resp.substr(he+4):resp;
+    while((n=conn.Recv(buf,sizeof(buf)-1))>0){buf[n]=0;resp.append(buf,n);}
+    conn.Close();
+    size_t he=resp.find("\r\n\r\n");
+    if(he==std::string::npos){if(err)*err="Bad response";return "";}
+    std::string headers=resp.substr(0,he);
+    std::string body_resp=resp.substr(he+4);
+    if(status_code){
+        size_t sp=headers.find(' ');
+        if(sp!=std::string::npos){*status_code=atoi(headers.substr(sp+1).c_str());}
+    }
+    return body_resp;
+}
+
+std::string Request(const std::string& url,const std::string& method,const std::string& body,const std::string& key){
+    std::lock_guard<std::mutex> lk(mtx);
+    const char* err=nullptr; int code=0;
+    std::string resp=RequestRaw(url,method,body,key,&err,&code);
+    if(err)LOGW("HTTP error: %s (code %d)",err,code);
+    return resp;
+}
+
+bool TestConnection(const std::string& url,const std::string& key,std::string& result_msg){
+    std::lock_guard<std::mutex> lk(mtx);
+    const char* err=nullptr; int code=0;
+    nlohmann::json req;req["model"]=Config::model_name;req["max_tokens"]=5;
+    req["messages"]=nlohmann::json::array({{{"role","user"},{"content","hi"}}});
+    std::string body=req.dump();
+    std::string resp=RequestRaw(url,"POST",body,key,&err,&code);
+    if(err){char buf[256];snprintf(buf,sizeof(buf),"FAIL: %s",err);result_msg=buf;return false;}
+    if(code>=400){
+        char buf[256];snprintf(buf,sizeof(buf),"FAIL: HTTP %d",code);result_msg=buf;
+        try{auto j=nlohmann::json::parse(resp);if(j.contains("error")&&j["error"].contains("message"))result_msg+=" - "+j["error"]["message"].get<std::string>();}catch(...){}
+        return false;
+    }
+    result_msg="OK - Connection successful";
+    return true;
 }
 }
 
@@ -197,6 +308,9 @@ static EGLSurface g_Surf=EGL_NO_SURFACE;
 static float g_Dpi=1.0f;
 static std::string g_FontMsg;
 static float g_LastT=0;
+static bool g_Testing=false;
+static std::string g_TestResult;
+static pthread_t g_TestThread=0;
 static float Scale(float v){return v*g_Dpi;}
 struct Island{ImVec2 pos;bool drag,dragS;ImVec2 dragOff,dragSt;}g_Isl={ImVec2(-1,-1),false,false,ImVec2(0,0),ImVec2(0,0)};
 
@@ -245,8 +359,19 @@ static void SetupStyle(){
 static bool InCircle(float x,float y,const ImVec2&c,float r){float dx=x-c.x,dy=y-c.y;return dx*dx+dy*dy<=r*r;}
 static bool InIsland(float x,float y){if(!g_Init||g_ShowUI||g_Isl.pos.x<0)return false;return InCircle(x,y,g_Isl.pos,Scale(56));}
 
+static void* TestThread(void* arg){
+    std::string url=Config::api_base;
+    std::string key=Config::api_key;
+    std::string msg;
+    bool ok=HttpClient::TestConnection(url,key,msg);
+    g_TestResult=msg;
+    g_Testing=false;
+    g_TestThread=0;
+    return nullptr;
+}
+
 static void DrawConfigWin(){
-    ImGui::SetNextWindowSize(ImVec2(Scale(520),Scale(680)),ImGuiCond_FirstUseEver);ImGuiIO&io=ImGui::GetIO();
+    ImGui::SetNextWindowSize(ImVec2(Scale(520),Scale(720)),ImGuiCond_FirstUseEver);ImGuiIO&io=ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*0.5f,io.DisplaySize.y*0.5f),ImGuiCond_FirstUseEver,ImVec2(0.5f,0.5f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(Scale(24),Scale(24)));ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,Scale(20));
     bool open=true;ImGui::Begin("DanmuGL Settings",&open,ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoCollapse);
@@ -257,7 +382,7 @@ static void DrawConfigWin(){
     ImGui::TextColored(Primary,"API Configuration");ImGui::Separator();ImGui::Spacing();
     ImGui::Text("API Key");if(ImGui::InputText("##ak",b1,sizeof(b1)))Config::api_key=b1;ImGui::Spacing();
     strncpy(b2,Config::api_base.c_str(),sizeof(b2)-1);b2[sizeof(b2)-1]=0;
-    ImGui::Text("API Base URL (HTTP recommended)");if(ImGui::InputText("##ab",b2,sizeof(b2)))Config::api_base=b2;ImGui::Spacing();
+    ImGui::Text("API Base URL (HTTP/HTTPS)");if(ImGui::InputText("##ab",b2,sizeof(b2)))Config::api_base=b2;ImGui::Spacing();
     strncpy(b3,Config::model_name.c_str(),sizeof(b3)-1);b3[sizeof(b3)-1]=0;
     ImGui::Text("Model Name");if(ImGui::InputText("##md",b3,sizeof(b3)))Config::model_name=b3;ImGui::Spacing();
     strncpy(b4,Config::font_path.c_str(),sizeof(b4)-1);b4[sizeof(b4)-1]=0;
@@ -269,7 +394,22 @@ static void DrawConfigWin(){
     ImGui::SliderInt("Max Danmaku Count",&Config::max_danmu_count,10,200);ImGui::Spacing();
     ImGui::SliderFloat("Danmaku Speed",&Config::danmu_speed,50,400,"%.0f");ImGui::Spacing();
     ImGui::Separator();ImGui::Spacing();
-    ImGui::TextColored(ImVec4(1,0.8f,0.3f,1),"Note: HTTPS not supported, use HTTP proxy/endpoint");ImGui::Spacing();
+    if(!g_Testing){
+        bool can_test=!Config::api_base.empty();
+        if(!can_test)ImGui::BeginDisabled();
+        if(ImGui::Button("Test Connection",ImVec2(-1,Scale(48)))){
+            g_Testing=true;g_TestResult="Testing...";
+            pthread_create(&g_TestThread,nullptr,TestThread,nullptr);
+        }
+        if(!can_test)ImGui::EndDisabled();
+    }else{
+        ImGui::TextColored(ImVec4(0.5f,0.7f,1,1),"Testing connection...");
+    }
+    if(!g_TestResult.empty()){
+        bool ok=g_TestResult.find("OK")==0;
+        ImGui::TextColored(ok?ImVec4(0.3f,1,0.4f,1):ImVec4(1,0.5f,0.5f,1),"%s",g_TestResult.c_str());
+    }
+    ImGui::Spacing();
     if(ImGui::Button("Save Config",ImVec2(-1,Scale(56))))Config::SaveConfig();ImGui::Spacing();
     if(Config::running){
         ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.8f,0.3f,0.3f,1));
@@ -340,6 +480,7 @@ static void Setup(){
     if(g_UIFont)io.FontDefault=g_UIFont;
     ImGui_ImplAndroid_Init(nullptr);ImGui_ImplOpenGL3_Init("#version 300 es");
     SetupStyle();g_Init=true;g_LastT=ImGui::GetTime();
+    if(Config::running)AIClient::Start();
     LOGI("DanmuGL setup complete, DPI: %.2f", g_Dpi);
 }
 

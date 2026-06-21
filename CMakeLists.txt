@@ -52,6 +52,16 @@ if(NOT preloader_android_POPULATED)
 endif()
 target_link_libraries(preloader PUBLIC fmt::fmt nlohmann_json::nlohmann_json)
 
+set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    mbedtls
+    GIT_REPOSITORY https://github.com/Mbed-TLS/mbedtls.git
+    GIT_TAG v3.5.1
+    GIT_SHALLOW ON
+)
+FetchContent_MakeAvailable(mbedtls)
+
 target_include_directories(preloader PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/ImGui
@@ -72,6 +82,9 @@ add_library(DanmuGL SHARED ${SOURCES})
 target_link_libraries(DanmuGL
     preloader
     fmt::fmt
+    mbedtls
+    mbedx509
+    mbedcrypto
     log
     android
     EGL
