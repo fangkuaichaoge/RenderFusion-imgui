@@ -192,17 +192,19 @@ void Add(const std::string& t){
     pending.push_back(t);
 }
 void Update(float dt,int sw,int sh,ImFont* f){
+    std::string to_add;
     {
         std::lock_guard<std::mutex> lk(mtx);
         pending_timer+=dt;
         if(pending_timer>=next_pending_interval && !pending.empty()){
             pending_timer=0;
             next_pending_interval=0.35f+(float)(rand()%25)/100.0f;
-            std::string t=pending.front();
+            to_add=pending.front();
             pending.erase(pending.begin());
-            lk.unlock();
-            AddImmediate(t);
         }
+    }
+    if(!to_add.empty()){
+        AddImmediate(to_add);
     }
     std::lock_guard<std::mutex> lk(mtx); ImFont* rf=f?f:ImGui::GetFont();
     float fs=Scale(Config::danmu_font_size);
