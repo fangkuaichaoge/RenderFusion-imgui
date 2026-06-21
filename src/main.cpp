@@ -164,45 +164,37 @@ bool SaveConfig(){
 }
 
 namespace Danmu {
-struct Item{std::string text;float x,y;int track;float speed;ImU32 color;float w;};
+struct Item{std::string text;float x,y;float speed;ImU32 color;float w,h;};
 std::vector<Item> list; std::mutex mtx;
 ImU32 cols[]={IM_COL32(255,255,255,255),IM_COL32(255,220,100,255),IM_COL32(100,255,200,255),IM_COL32(255,150,180,255),IM_COL32(150,200,255,255),IM_COL32(255,255,100,255),IM_COL32(200,255,150,255)};
-int cc=7;const int NUM_TRACKS=4;
-struct Track{float end_x;};Track tracks[NUM_TRACKS];
+int cc=7;
 void Add(const std::string& t){
-    if(t.empty())return;Item it;it.text=t;it.speed=Config::danmu_speed+(float)(rand()%80-40);it.color=cols[rand()%cc];it.track=0;it.w=0;it.x=-9999;it.y=0;
-    int best_track=0;float best_end=-1;
-    for(int i=0;i<NUM_TRACKS;i++){if(tracks[i].end_x>best_end||best_end<0){best_end=tracks[i].end_x;best_track=i;}}
-    it.track=best_track;
+    if(t.empty())return;Item it;it.text=t;it.speed=Config::danmu_speed+(float)(rand()%100-50);it.color=cols[rand()%cc];it.x=-9999;it.y=0;it.w=0;it.h=0;
     std::lock_guard<std::mutex> lk(mtx);
     if(list.size()>=(size_t)Config::max_danmu_count)list.erase(list.begin());
     list.push_back(it);
 }
 void Update(float dt,int sw,int sh,ImFont* f){
     std::lock_guard<std::mutex> lk(mtx); ImFont* rf=f?f:ImGui::GetFont(); float fs=rf->FontSize;
-    for(int i=0;i<NUM_TRACKS;i++)tracks[i].end_x=(float)sw;
+    int max_lines=(int)((sh-Scale(250))/(fs*1.6f));if(max_lines<1)max_lines=8;
     for(auto it=list.begin();it!=list.end();){
         Item& d=*it;
         ImVec2 ts=rf->CalcTextSizeA(fs,FLT_MAX,0,d.text.c_str());
-        d.w=ts.x;
-        float track_y=Scale(20)+d.track*fs*1.45f;
-        d.y=track_y;
-        if(d.x<-9000){d.x=(float)sw+20;}
+        d.w=ts.x;d.h=ts.y;
+        if(d.x<-9000){
+            d.x=(float)sw+10;
+            d.y=Scale(120)+(rand()%max_lines)*fs*1.6f;
+        }
         d.x-=d.speed*dt;
-        if(d.x+d.w<tracks[d.track].end_x)tracks[d.track].end_x=d.x-Scale(10);
         if(d.x+d.w<-10)it=list.erase(it);else ++it;
     }
 }
 void Render(ImDrawList* dl,ImFont* f){
     std::lock_guard<std::mutex> lk(mtx); ImFont* rf=f?f:ImGui::GetFont(); float fs=rf->FontSize;
-    float bar_h=fs*NUM_TRACKS*1.45f+Scale(30);
-    dl->AddRectFilled(ImVec2(0,0),ImVec2((float)g_W,bar_h),IM_COL32(0,0,0,70),0);
     for(auto& d:list){
-        ImVec2 ts=rf->CalcTextSizeA(fs,FLT_MAX,0,d.text.c_str());
-        float padx=Scale(14),pady=Scale(5);
-        ImVec2 pmin(d.x-padx,d.y-pady),pmax(d.x+ts.x+padx,d.y+ts.y+pady);
-        dl->AddRectFilled(pmin,pmax,IM_COL32(0,0,0,150),Scale(14));
-        dl->AddText(rf,fs,ImVec2(d.x,d.y),d.color,d.text.c_str());
+        ImVec2 p(d.x,d.y);
+        dl->AddText(rf,fs,ImVec2(p.x+1,p.y+1),IM_COL32(0,0,0,220),d.text.c_str());
+        dl->AddText(rf,fs,p,d.color,d.text.c_str());
     }
 }
 }
@@ -471,8 +463,15 @@ std::string ParseDanmu(const std::string& resp){
     try{auto j=nlohmann::json::parse(resp);
     if(j.contains("error")){LOGE("API returned error: %s",j.dump().c_str());return "";}
     if(j.contains("choices")&&j["choices"].is_array()&&j["choices"].size()>0){auto&c=j["choices"][0];
+    std::string finish="";if(c.contains("finish_reason"))finish=c["finish_reason"].get<std::string>();
+    LOGI("finish_reason: %s",finish.c_str());
     if(c.contains("message")&&c["message"].contains("content")){std::string s=c["message"]["content"].get<std::string>();
-    LOGI("Raw content from API: '%s'",s.c_str());
+    LOGI("Raw content from API: '%s' (%d chars)",s.c_str(),(int)s.size());
+    if(c["message"].contains("reasoning_content")&&s.empty()){
+        std::string r=c["message"]["reasoning_content"].get<std::string>();
+        LOGI("Model is thinking (reasoning), waiting for next request... reasoning length: %d",(int)r.size());
+        return "";
+    }
     size_t a=s.find_first_not_of(" \n\r\t\"'"),b=s.find_last_not_of(" \n\r\t\"'");
     if(a!=std::string::npos&&b!=std::string::npos)s=s.substr(a,b-a+1);if(s.size()>30)s=s.substr(0,30);
     LOGI("Parsed danmu text: '%s'",s.c_str());
@@ -488,21 +487,26 @@ void* Worker(void*){
         if(!run||!Config::running)continue;time_t now=time(nullptr);if(now-last<Config::capture_interval)continue;last=now;
         if(Config::api_key.empty()&&Config::api_base.find("localhost")==std::string::npos){LOGW("No API key configured");continue;}
         std::vector<unsigned char> jpg;if(!Capture::GetLatestFrame(jpg)||jpg.empty()){LOGW("No frame captured yet");continue;}
-        LOGI("Frame captured: %d bytes, sending request to %s", (int)jpg.size(), Config::api_base.c_str());
+        LOGI("Sending request: %d bytes JPEG to %s (model: %s)", (int)jpg.size(), Config::api_base.c_str(), Config::model_name.c_str());
         std::string b64=Base64Encode(jpg.data(),jpg.size());
-        nlohmann::json req;req["model"]=Config::model_name;req["max_tokens"]=50;req["temperature"]=0.8f;
+        nlohmann::json req;req["model"]=Config::model_name;req["max_tokens"]=300;req["temperature"]=0.9f;
+        req["stream"]=false;req["enable_thinking"]=false;
         nlohmann::json msgs=nlohmann::json::array();
-        nlohmann::json sys;sys["role"]="system";sys["content"]="You are a live chat commentator. Generate ONE short, fun comment (max 20 chars) about the game screen in the image. Like a real-time bullet comment on video sites. Just output the comment text directly, no quotes.";msgs.push_back(sys);
+        nlohmann::json sys;sys["role"]="system";
+        sys["content"]="You are a funny live stream bullet comment commentator. Look at the game screenshot and output EXACTLY ONE short casual comment (max 15 Chinese characters OR 8 English words). IMPORTANT: Output ONLY the comment itself, absolutely NO reasoning, NO thinking, NO explanation, NO quotes, NO extra text. Be humorous or excited.";
+        msgs.push_back(sys);
         nlohmann::json usr;usr["role"]="user";nlohmann::json ca=nlohmann::json::array();
-        nlohmann::json tp;tp["type"]="text";tp["text"]="Generate one fun bullet comment for this game scene.";ca.push_back(tp);
-        nlohmann::json ip;ip["type"]="image_url";ip["image_url"]["url"]="data:image/jpeg;base64,"+b64;ca.push_back(ip);
+        nlohmann::json tp;tp["type"]="text";tp["text"]="One short danmu comment now.";ca.push_back(tp);
+        nlohmann::json ip;ip["type"]="image_url";
+        nlohmann::json iurl;iurl["url"]="data:image/jpeg;base64,"+b64;iurl["detail"]="low";
+        ip["image_url"]=iurl;ca.push_back(ip);
         usr["content"]=ca;msgs.push_back(usr);req["messages"]=msgs;
         std::string body=req.dump();std::string resp=HttpClient::Request(Config::api_base,"POST",body,Config::api_key);
-        if(resp.empty()){LOGW("Empty response from API");Logger::IncError();continue;}
+        if(resp.empty()){LOGW("Empty response from API");continue;}
         LOGI("API response received (%d bytes)", (int)resp.size());
         std::string txt=ParseDanmu(resp);
-        if(!txt.empty()){LOGI("Danmu added: %s (total: %d)", txt.c_str(),Logger::g_DanmuCount+1);Danmu::Add(txt);Logger::IncDanmu();}
-        else{LOGW("Failed to parse danmu, response preview: %s", resp.substr(0,std::min((int)resp.size(),200)).c_str());Logger::IncError();}
+        if(!txt.empty()){LOGI("Danmu added: '%s' (total: %d)", txt.c_str(),Logger::g_DanmuCount+1);Danmu::Add(txt);Logger::IncDanmu();}
+        else{LOGI("No danmu this round (model thinking or empty)");}
     }
     LOGI("AI worker stopped");
     return nullptr;
