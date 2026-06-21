@@ -168,12 +168,15 @@ bool SaveConfig(){
 }
 
 namespace Danmu {
-struct Item{std::string text;float x,y;float speed;ImU32 color;float w,h;};
+struct Item{std::string text;float x,y;float speed;ImU32 color;float w,h;float offset;};
 std::vector<Item> list; std::mutex mtx;
 ImU32 cols[]={IM_COL32(255,255,255,255),IM_COL32(255,220,100,255),IM_COL32(100,255,200,255),IM_COL32(255,150,180,255),IM_COL32(150,200,255,255),IM_COL32(255,255,100,255),IM_COL32(200,255,150,255)};
-int cc=7;
+int cc=7;float g_AddDelay=0;int g_LineIndex=0;
 void Add(const std::string& t){
-    if(t.empty())return;Item it;it.text=t;it.speed=Config::danmu_speed+(float)(rand()%120-60);it.color=cols[rand()%cc];it.x=-9999;it.y=0;it.w=0;it.h=0;
+    if(t.empty())return;Item it;it.text=t;
+    it.speed=Config::danmu_speed+(float)(rand()%120-60);it.color=cols[rand()%cc];
+    it.x=-9999;it.y=0;it.w=0;it.h=0;it.offset=g_AddDelay;
+    g_AddDelay+=Scale(150)+(float)(rand()%Scale(200));
     std::lock_guard<std::mutex> lk(mtx);
     if(list.size()>=(size_t)Config::max_danmu_count)list.erase(list.begin());
     list.push_back(it);
@@ -188,12 +191,16 @@ void Update(float dt,int sw,int sh,ImFont* f){
         ImVec2 ts=rf->CalcTextSizeA(fs,FLT_MAX,0,d.text.c_str());
         d.w=ts.x;d.h=ts.y;
         if(d.x<-9000){
-            d.x=(float)sw+Scale(20);
-            d.y=Scale(150)+(rand()%max_lines)*fs*1.5f;
+            d.x=(float)sw+Scale(20)+d.offset;
+            int line=g_LineIndex%max_lines;
+            g_LineIndex++;
+            d.y=Scale(150)+line*fs*1.5f;
         }
         d.x-=d.speed*dt*g_Dpi;
         if(d.x+d.w<-Scale(20))it=list.erase(it);else ++it;
     }
+    g_AddDelay-=Config::danmu_speed*dt*g_Dpi;
+    if(g_AddDelay<0)g_AddDelay=0;
 }
 void Render(ImDrawList* dl,ImFont* f){
     std::lock_guard<std::mutex> lk(mtx); ImFont* rf=f?f:ImGui::GetFont();
@@ -227,7 +234,7 @@ struct Connection {
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context ctr_drbg;
     int timeout_sec;
-    Connection() : https(false), timeout_sec(30) {
+    Connection() : https(false), timeout_sec(10) {
         mbedtls_net_init(&net);
         mbedtls_ssl_init(&ssl);
         mbedtls_ssl_config_init(&conf);
@@ -517,19 +524,63 @@ std::vector<std::string> ParseDanmuList(const std::string& resp){
         LOGI("Model is thinking (reasoning), reasoning length: %d",(int)r.size());
         return res;
     }
+    size_t code_start=s.find("```");
+    if(code_start!=std::string::npos){
+        size_t code_end=s.find("```",code_start+3);
+        if(code_end!=std::string::npos){
+            s=s.substr(code_start+3,code_end-code_start-3);
+            size_t nl=s.find('\n');
+            if(nl!=std::string::npos)s=s.substr(nl+1);
+            LOGI("Extracted from code block, new length=%d",(int)s.size());
+        }
+    }
     s=FilterEmoji(s);
+    for(char& ch:s){
+        if(ch=='\r')ch='\n';
+        if(ch==';'||ch=='；'||ch=='|'||ch=='｜')ch='\n';
+    }
+    {
+        std::string tmp;tmp.reserve(s.size());
+        bool prev_newline=true;
+        for(size_t i=0;i<s.size();i++){
+            if(prev_newline){
+                while(i<s.size()){
+                    unsigned char c2=(unsigned char)s[i];
+                    if(c2==' '||c2=='\t'||c2=='\n'){i++;continue;}
+                    if(c2=='-'||c2=='*'||c2=='•'||c2=='·'||c2=='#'||c2=='>'){i++;continue;}
+                    if(c2>='0'&&c2<='9'){i++;continue;}
+                    if(c2==')'||c2=='）'||c2==']'||c2=='】'||c2=='}'||c2=='」'||c2=='』'){i++;continue;}
+                    if(c2==':'||c2=='：'||c2=='.'||c2=='。'||c2==','||c2=='，'||c2=='、'){i++;continue;}
+                    if(c2=='\''||c2=='"'||c2=='`'||c2=='「'||c2=='『'){i++;continue;}
+                    break;
+                }
+                if(i<s.size())prev_newline=false;
+            }
+            if(i<s.size()){
+                if(s[i]=='\n'){prev_newline=true;if(!tmp.empty()&&tmp.back()!='\n')tmp+='\n';}
+                else tmp+=s[i];
+            }
+        }
+        s=tmp;
+    }
     std::stringstream ss(s);std::string line;
     while(std::getline(ss,line,'\n')){
-        size_t a=line.find_first_not_of(" \n\r\t\"'`-*•·.。,，、0123456789)）]】");
-        size_t b=line.find_last_not_of(" \n\r\t\"'`-*•·.。,，、(（[【");
+        while(!line.empty()&&(line.back()==' '||line.back()=='\t'||line.back()=='\n'||line.back()=='\r'))line.pop_back();
+        size_t a=line.find_first_not_of(" \n\r\t");
+        size_t b=line.find_last_not_of(" \n\r\t");
         if(a!=std::string::npos&&b!=std::string::npos&&b>=a){
             std::string t=line.substr(a,b-a+1);
             t=FilterEmoji(t);
-            if(t.size()>=2&&t.size()<=50){
-                res.push_back(t);
+            while(!t.empty()&&(t.back()=='`'||t.back()=='\''||t.back()=='"'))t.pop_back();
+            while(!t.empty()&&(t[0]=='`'||t[0]=='\''||t[0]=='"'))t=t.substr(1);
+            if(t.size()>=2&&t.size()<=80){
+                bool is_dup=false;
+                for(auto& existing:res){if(existing==t){is_dup=true;break;}}
+                if(!is_dup)res.push_back(t);
             }
         }
     }
+    while(res.size()>(size_t)Config::danmu_per_request+2)res.pop_back();
     LOGI("Parsed %d danmu lines",(int)res.size());
     return res;}}
     else{LOGE("Response missing choices array, keys: %s",j.dump().substr(0,200).c_str());}
@@ -545,14 +596,14 @@ void* Worker(void*){
         std::vector<unsigned char> jpg;if(!Capture::GetLatestFrame(jpg)||jpg.empty()){LOGW("No frame captured yet");continue;}
         LOGI("Sending request: %d bytes JPEG", (int)jpg.size());
         std::string b64=Base64Encode(jpg.data(),jpg.size());
-        nlohmann::json req;req["model"]=Config::model_name;req["max_tokens"]=500;req["temperature"]=1.0f;
+        nlohmann::json req;req["model"]=Config::model_name;req["max_tokens"]=800;req["temperature"]=1.2f;
         req["stream"]=false;req["enable_thinking"]=false;
         nlohmann::json msgs=nlohmann::json::array();
         nlohmann::json sys;sys["role"]="system";
         if(Config::prompt_lang==0){
-            sys["content"]="你是一个Minecraft游戏直播的弹幕AI助手。看这张Minecraft游戏截图，生成"+std::to_string(Config::danmu_per_request)+"条有趣的弹幕评论。规则：1.每条弹幕一行，用换行分隔 2.简短有趣，每条最多15个中文字符 3.像真实直播间观众一样吐槽、惊叹、玩梗 4.描述你看到的MC场景（挖矿/建造/打怪/红石/钻石/苦力怕等）5.不要思考、不要解释、不要加序号和标点符号 6.绝对禁止使用emoji表情符号，只使用纯文字 7.语气激动口语化，比如卧槽、666、神了、寄了之类的";
+            sys["content"]="你是一个Minecraft游戏直播弹幕生成器。严格按照要求输出"+std::to_string(Config::danmu_per_request)+"条弹幕，必须每条单独占一行，绝对不要输出其他任何内容。\n\n输出格式示例（必须完全按照这种格式，每行一条，不要序号）：\n卧槽钻石！\n666666\n苦力怕快跑啊\n神了这波操作\n挖到钻石了兄弟们\n寄了寄了\n\n要求：\n1. 必须输出正好"+std::to_string(Config::danmu_per_request)+"条，不能多也不能少\n2. 每条单独占一行，之间用换行分隔\n3. 每条1-15个汉字，口语化，像直播间观众发的\n4. 绝对禁止emoji表情\n5. 禁止序号、列表符号、引号、解释、开场白、结束语\n6. 禁止用markdown代码块包裹，直接输出纯文本\n7. 不要重复内容";
         }else{
-            sys["content"]="You are a Minecraft live stream chat commentator. Look at this Minecraft screenshot and generate exactly "+std::to_string(Config::danmu_per_request)+" fun danmaku comments. Rules: 1. One comment per line, separated by newlines 2. Each comment max 8 words, short and exciting 3. React like a real Twitch/YouTube chat viewer 4. Mention what you see: mining, building, creeper, diamond, redstone, mob fight etc. 5. NO reasoning, NO explanation, NO numbers, NO quotes 6. ABSOLUTELY NO emojis, plain text only 7. Use casual gamer slang: LMAO, OP, pog, no way, bruh, rip, gg";
+            sys["content"]="You are a Minecraft Twitch chat comment generator. Output EXACTLY "+std::to_string(Config::danmu_per_request)+" comments, ONE PER LINE, absolutely NO other text.\n\nExample format (exactly like this, no numbers):\npog diamond!\nno way creeper\nLMAO rip\nOP plays bruh\ngg ez\nrip bozo\n\nRules:\n1. Output EXACTLY "+std::to_string(Config::danmu_per_request)+" comments, no more no less\n2. One comment per line, separated only by newlines\n3. Max 8 words each, casual gamer slang\n4. ABSOLUTELY NO emojis\n5. NO numbers, NO bullets, NO quotes, NO explanations, NO intro/outro\n6. NO markdown code blocks, just plain text\n7. No duplicates";
         }
         msgs.push_back(sys);
         nlohmann::json usr;usr["role"]="user";nlohmann::json ca=nlohmann::json::array();
@@ -579,8 +630,19 @@ void* Worker(void*){
     LOGI("AI worker stopped");
     return nullptr;
 }
-void Start(){if(thr)return;run=true;last=time(nullptr)-Config::capture_interval;pthread_create(&thr,nullptr,Worker,nullptr);}
-void Stop(){run=false;if(thr){pthread_cond_signal(&cond);pthread_join(thr,nullptr);thr=0;}}
+void Start(){
+    if(thr){pthread_detach(thr);thr=0;}
+    run=true;last=time(nullptr)-Config::capture_interval;
+    pthread_create(&thr,nullptr,Worker,nullptr);
+}
+void Stop(){
+    run=false;
+    if(thr){
+        pthread_cond_signal(&cond);
+        pthread_detach(thr);
+        thr=0;
+    }
+}
 }
 
 struct GLSt{GLint prog,tex,aBuf,eBuf,vao,fbo,vp[4],sc[4],bSrc,bDst,bSrcA,bDstA;GLboolean blend,cull,depth,scissor,stencil,dither;GLint front,act;};
@@ -626,7 +688,7 @@ static void SetupStyle(){
 }
 
 static bool InCircle(float x,float y,const ImVec2&c,float r){float dx=x-c.x,dy=y-c.y;return dx*dx+dy*dy<=r*r;}
-static bool InIsland(float x,float y){if(!g_Init||g_ShowUI||g_Isl.pos.x<0)return false;return InCircle(x,y,g_Isl.pos,Scale(56));}
+static bool InIsland(float x,float y){if(!g_Init||g_Isl.pos.x<0)return false;return InCircle(x,y,g_Isl.pos,Scale(56));}
 
 static void* TestThread(void* arg){
     std::string url=Config::api_base;
@@ -643,8 +705,7 @@ static void DrawConfigWin(){
     ImGui::SetNextWindowSize(ImVec2(Scale(520),Scale(720)),ImGuiCond_FirstUseEver);ImGuiIO&io=ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*0.5f,io.DisplaySize.y*0.5f),ImGuiCond_FirstUseEver,ImVec2(0.5f,0.5f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(Scale(24),Scale(24)));ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,Scale(20));
-    bool open=true;ImGui::Begin("DanmuGL Settings",&open,ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoCollapse);
-    if(!open)g_ShowUI=false;
+    ImGui::Begin("DanmuGL Settings",nullptr,ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoResize);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,Scale(10));
     static char b1[512]={0},b2[512]={0},b3[128]={0},b4[512]={0};
     strncpy(b1,Config::api_key.c_str(),sizeof(b1)-1);b1[sizeof(b1)-1]=0;
@@ -735,10 +796,16 @@ static bool DrawIsland(bool* clicked){
                 if(g_Isl.pos.x<r)g_Isl.pos.x=r;if(g_Isl.pos.x>io.DisplaySize.x-r)g_Isl.pos.x=io.DisplaySize.x-r;
                 if(g_Isl.pos.y<r)g_Isl.pos.y=r;if(g_Isl.pos.y>io.DisplaySize.y-r)g_Isl.pos.y=io.DisplaySize.y-r;}
         }else{if(g_Isl.drag){g_Isl.drag=false;g_Isl.dragS=false;}else if(g_Isl.dragSt.x>=0&&inC)*clicked=true;g_Isl.dragSt=ImVec2(-1,-1);}
-    }else{g_Isl.drag=false;g_Isl.dragS=false;g_Isl.dragSt=ImVec2(-1,-1);}
+    }else{
+        g_Isl.drag=false;g_Isl.dragS=false;g_Isl.dragSt=ImVec2(-1,-1);
+        static bool s_islandDown=false;
+        if(inC&&io.MouseClicked[0])s_islandDown=true;
+        if(s_islandDown&&!io.MouseDown[0]){s_islandDown=false;if(inC)*clicked=true;}
+        else if(!inC)s_islandDown=false;
+    }
     ImU32 idle=ImGui::ColorConvertFloat4ToU32(Primary),hov=ImGui::ColorConvertFloat4ToU32(PriL),pres=ImGui::ColorConvertFloat4ToU32(PriD);
-    ImU32 bg;float ra=0;bool pr=inC&&io.MouseDown[0]&&!g_Isl.dragS&&!g_ShowUI;
-    if(g_Isl.drag||pr){bg=pres;ra=Scale(4);}else if(inC&&!g_ShowUI){bg=hov;ra=Scale(3);}else bg=idle;
+    ImU32 bg;float ra=0;bool pr=inC&&io.MouseDown[0];
+    if(g_Isl.drag||pr){bg=pres;ra=Scale(4);}else if(inC){bg=hov;ra=Scale(3);}else bg=idle;
     dl->AddCircleFilled(ImVec2(c.x,c.y+Scale(6)),r+ra,IM_COL32(0,0,0,100),48);
     dl->AddCircleFilled(c,r+ra,bg,48);dl->AddCircle(c,r+ra,IM_COL32(255,255,255,80),48,Scale(2));
     if(g_FontIsland){const char*l="AI";ImVec2 ts=g_FontIsland->CalcTextSizeA(g_FontIsland->FontSize,FLT_MAX,0,l);
