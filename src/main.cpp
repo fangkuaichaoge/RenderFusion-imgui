@@ -598,13 +598,13 @@ void* Worker(void*){
         LOGI("Sending request: %d bytes JPEG", (int)jpg.size());
         std::string b64=Base64Encode(jpg.data(),jpg.size());
         nlohmann::json req;req["model"]=Config::model_name;req["max_tokens"]=800;req["temperature"]=1.2f;
-        req["stream"]=false;req["enable_thinking"]=false;
+        req["stream"]=false;
         nlohmann::json msgs=nlohmann::json::array();
         nlohmann::json sys;sys["role"]="system";
         if(Config::prompt_lang==0){
-            sys["content"]="你是一个Minecraft游戏直播弹幕生成器。严格按照要求输出"+std::to_string(Config::danmu_per_request)+"条弹幕，必须每条单独占一行，绝对不要输出其他任何内容。\n\n输出格式示例（必须完全按照这种格式，每行一条，不要序号）：\n卧槽钻石！\n666666\n苦力怕快跑啊\n神了这波操作\n挖到钻石了兄弟们\n寄了寄了\n\n要求：\n1. 必须输出正好"+std::to_string(Config::danmu_per_request)+"条，不能多也不能少\n2. 每条单独占一行，之间用换行分隔\n3. 每条1-15个汉字，口语化，像直播间观众发的\n4. 绝对禁止emoji表情\n5. 禁止序号、列表符号、引号、解释、开场白、结束语\n6. 禁止用markdown代码块包裹，直接输出纯文本\n7. 不要重复内容";
+            sys["content"]="你是一个Minecraft游戏直播弹幕生成器，必须只能根据画面生成符合内容的弹幕，必须注重于游戏画面本身，不能输出其他无关内容，不能根据画面做出无端无关联想。严格按照要求输出"+std::to_string(Config::danmu_per_request)+"条弹幕，必须每条单独占一行，绝对不要输出其他任何内容。\n\n输出格式示例（必须完全按照这种格式，每行一条，不要序号）：\n卧槽钻石！\n666666\n苦力怕快跑啊\n神了这波操作\n挖到钻石了兄弟们\n寄了寄了\n\n要求：\n1. 必须输出正好"+std::to_string(Config::danmu_per_request)+"条，不能多也不能少\n2. 每条单独占一行，之间用换行分隔\n3. 每条1-15个汉字，口语化，像直播间观众发的\n4. 绝对禁止emoji表情\n5. 禁止序号、列表符号、引号、解释、开场白、结束语\n6. 禁止用markdown代码块包裹，直接输出纯文本\n7. 不要重复内容";
         }else{
-            sys["content"]="You are a Minecraft Twitch chat comment generator. Output EXACTLY "+std::to_string(Config::danmu_per_request)+" comments, ONE PER LINE, absolutely NO other text.\n\nExample format (exactly like this, no numbers):\npog diamond!\nno way creeper\nLMAO rip\nOP plays bruh\ngg ez\nrip bozo\n\nRules:\n1. Output EXACTLY "+std::to_string(Config::danmu_per_request)+" comments, no more no less\n2. One comment per line, separated only by newlines\n3. Max 8 words each, casual gamer slang\n4. ABSOLUTELY NO emojis\n5. NO numbers, NO bullets, NO quotes, NO explanations, NO intro/outro\n6. NO markdown code blocks, just plain text\n7. No duplicates";
+            sys["content"]="You are a Minecraft Twitch chat comment generator. Generate comments ONLY based on what is actually visible in the gameplay screenshot. Focus strictly on the game content, do NOT make unrelated assumptions or hallucinations. Output EXACTLY "+std::to_string(Config::danmu_per_request)+" comments, ONE PER LINE, absolutely NO other text.\n\nExample format (exactly like this, no numbers):\npog diamond!\nno way creeper\nLMAO rip\nOP plays bruh\ngg ez\nrip bozo\n\nRules:\n1. Output EXACTLY "+std::to_string(Config::danmu_per_request)+" comments, no more no less\n2. One comment per line, separated only by newlines\n3. Max 8 words each, casual gamer slang\n4. ABSOLUTELY NO emojis\n5. NO numbers, NO bullets, NO quotes, NO explanations, NO intro/outro\n6. NO markdown code blocks, just plain text\n7. No duplicates";
         }
         msgs.push_back(sys);
         nlohmann::json usr;usr["role"]="user";nlohmann::json ca=nlohmann::json::array();
@@ -711,6 +711,7 @@ static void DrawConfigWin(){
     static char b1[512]={0},b2[512]={0},b3[128]={0},b4[512]={0};
     strncpy(b1,Config::api_key.c_str(),sizeof(b1)-1);b1[sizeof(b1)-1]=0;
     ImGui::TextColored(Primary,"API Configuration");ImGui::Separator();ImGui::Spacing();
+    ImGui::TextWrapped("Compatible with all OpenAI-format APIs (SiliconFlow, ZenMux, OpenAI, DeepSeek, etc.)");ImGui::Spacing();
     ImGui::Text("API Key");if(ImGui::InputText("##ak",b1,sizeof(b1)))Config::api_key=b1;ImGui::Spacing();
     strncpy(b2,Config::api_base.c_str(),sizeof(b2)-1);b2[sizeof(b2)-1]=0;
     ImGui::Text("API Base URL (HTTP/HTTPS)");if(ImGui::InputText("##ab",b2,sizeof(b2)))Config::api_base=b2;ImGui::Spacing();
