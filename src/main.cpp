@@ -176,7 +176,7 @@ void Add(const std::string& t){
     if(t.empty())return;Item it;it.text=t;
     it.speed=Config::danmu_speed+(float)(rand()%120-60);it.color=cols[rand()%cc];
     it.x=-9999;it.y=0;it.w=0;it.h=0;it.offset=g_AddDelay;
-    g_AddDelay+=Scale(150)+(float)(rand()%Scale(200));
+    g_AddDelay+=Scale(150)+(float)(rand()%(int)Scale(200));
     std::lock_guard<std::mutex> lk(mtx);
     if(list.size()>=(size_t)Config::max_danmu_count)list.erase(list.begin());
     list.push_back(it);
@@ -537,7 +537,7 @@ std::vector<std::string> ParseDanmuList(const std::string& resp){
     s=FilterEmoji(s);
     for(char& ch:s){
         if(ch=='\r')ch='\n';
-        if(ch==';'||ch=='；'||ch=='|'||ch=='｜')ch='\n';
+        if(ch==';'||ch=='|')ch='\n';
     }
     {
         std::string tmp;tmp.reserve(s.size());
@@ -546,12 +546,13 @@ std::vector<std::string> ParseDanmuList(const std::string& resp){
             if(prev_newline){
                 while(i<s.size()){
                     unsigned char c2=(unsigned char)s[i];
+                    if(c2<' '){i++;continue;}
                     if(c2==' '||c2=='\t'||c2=='\n'){i++;continue;}
-                    if(c2=='-'||c2=='*'||c2=='•'||c2=='·'||c2=='#'||c2=='>'){i++;continue;}
+                    if(c2=='-'||c2=='*'||c2=='#'||c2=='>'){i++;continue;}
                     if(c2>='0'&&c2<='9'){i++;continue;}
-                    if(c2==')'||c2=='）'||c2==']'||c2=='】'||c2=='}'||c2=='」'||c2=='』'){i++;continue;}
-                    if(c2==':'||c2=='：'||c2=='.'||c2=='。'||c2==','||c2=='，'||c2=='、'){i++;continue;}
-                    if(c2=='\''||c2=='"'||c2=='`'||c2=='「'||c2=='『'){i++;continue;}
+                    if(c2==')'||c2==']'||c2=='}'){i++;continue;}
+                    if(c2==':'||c2=='.'||c2==','){i++;continue;}
+                    if(c2=='\''||c2=='"'||c2=='`'){i++;continue;}
                     break;
                 }
                 if(i<s.size())prev_newline=false;
