@@ -12,6 +12,7 @@
 #include <netdb.h>
 #include <cstdlib>
 #include <cstdio>
+#include <cerrno>
 #include <string>
 #include <vector>
 #include <mutex>
@@ -128,7 +129,8 @@ struct Connection {
     mbedtls_ssl_config conf;
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context ctr_drbg;
-    Connection() : https(false) {
+    int timeout_sec;
+    Connection() : https(false), timeout_sec(30) {
         mbedtls_net_init(&net);
         mbedtls_ssl_init(&ssl);
         mbedtls_ssl_config_init(&conf);
@@ -145,6 +147,7 @@ struct Connection {
         if (ret != 0) { *err = "DRBG init failed"; return ret; }
         ret = mbedtls_net_connect(&net, p.host.c_str(), port_str, MBEDTLS_NET_PROTO_TCP);
         if (ret != 0) { *err = "Connect failed"; return ret; }
+        SetTimeout(timeout_sec);
         if (p.https) {
             ret = mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
             if (ret != 0) { *err = "SSL config failed"; return ret; }
@@ -155,10 +158,12 @@ struct Connection {
             if (ret != 0) { *err = "SSL setup failed"; return ret; }
             ret = mbedtls_ssl_set_hostname(&ssl, p.host.c_str());
             if (ret != 0) { *err = "SSL hostname failed"; return ret; }
+            int attempts = 0;
             while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
                 if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
                     *err = "SSL handshake failed"; return ret;
                 }
+                if(++attempts > 100) { *err = "SSL handshake timeout"; return -1; }
             }
             https = true;
         } else {
@@ -166,18 +171,39 @@ struct Connection {
         }
         return 0;
     }
-    int Send(const void* buf, size_t len) {
-        if (https) return mbedtls_ssl_write(&ssl, (const unsigned char*)buf, len);
-        else return (int)send(net.fd, buf, len, 0);
+    int SendAll(const void* buf, size_t len) {
+        const unsigned char* p=(const unsigned char*)buf;size_t sent=0;
+        while(sent<len){
+            int n;
+            if(https)n=mbedtls_ssl_write(&ssl,p+sent,len-sent);
+            else n=(int)send(net.fd,p+sent,(int)(len-sent),0);
+            if(n>0){sent+=n;continue;}
+            if(n==0)return -1;
+            if(https&&(n==MBEDTLS_ERR_SSL_WANT_READ||n==MBEDTLS_ERR_SSL_WANT_WRITE))continue;
+            if(!https&&n<0&&(errno==EINTR||errno==EAGAIN))continue;
+            return -1;
+        }
+        return (int)sent;
     }
-    int Recv(void* buf, size_t len) {
-        if (https) return mbedtls_ssl_read(&ssl, (unsigned char*)buf, len);
-        else return (int)recv(net.fd, buf, len, 0);
+    int RecvSome(void* buf, size_t len) {
+        while(true){
+            int n;
+            if(https)n=mbedtls_ssl_read(&ssl,(unsigned char*)buf,len);
+            else n=(int)recv(net.fd,buf,(int)len,0);
+            if(n>0)return n;
+            if(n==0)return 0;
+            if(https&&(n==MBEDTLS_ERR_SSL_WANT_READ||n==MBEDTLS_ERR_SSL_WANT_WRITE))continue;
+            if(!https&&n<0&&(errno==EINTR||errno==EAGAIN))continue;
+            return -1;
+        }
     }
     void SetTimeout(int sec) {
-        struct timeval tv;tv.tv_sec=sec;tv.tv_usec=0;
-        setsockopt(net.fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));
-        setsockopt(net.fd,SOL_SOCKET,SO_SNDTIMEO,&tv,sizeof(tv));
+        timeout_sec=sec;
+        if(net.fd>=0){
+            struct timeval tv;tv.tv_sec=sec;tv.tv_usec=0;
+            setsockopt(net.fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));
+            setsockopt(net.fd,SOL_SOCKET,SO_SNDTIMEO,&tv,sizeof(tv));
+        }
     }
     void Close() {
         if (https) mbedtls_ssl_close_notify(&ssl);
@@ -194,7 +220,6 @@ std::string RequestRaw(const std::string& url,const std::string& method,const st
     Connection conn;
     int ret = conn.Connect(p, err);
     if (ret != 0) return "";
-    conn.SetTimeout(30);
     std::ostringstream req;
     req<<method<<" "<<p.path<<" HTTP/1.1\r\nHost: "<<p.host;
     if((!p.https&&p.port!=80)||(p.https&&p.port!=443))req<<":"<<p.port;
@@ -202,10 +227,15 @@ std::string RequestRaw(const std::string& url,const std::string& method,const st
     if(!key.empty())req<<"Authorization: Bearer "<<key<<"\r\n";
     req<<"Connection: close\r\n\r\n"<<body;
     std::string rs=req.str();
-    if(conn.Send(rs.c_str(),rs.size())<=0){conn.Close();if(err)*err="Send failed";return "";}
-    std::string resp;char buf[4096];ssize_t n;
-    while((n=conn.Recv(buf,sizeof(buf)-1))>0){buf[n]=0;resp.append(buf,n);}
+    if(conn.SendAll(rs.c_str(),rs.size())<=0){conn.Close();if(err)*err="Send failed";return "";}
+    const size_t MAX_RESP = 2*1024*1024;
+    std::string resp;char buf[8192];int n;
+    while((n=conn.RecvSome(buf,sizeof(buf)-1))>0){
+        buf[n]=0;resp.append(buf,n);
+        if(resp.size()>MAX_RESP){if(err)*err="Response too large";return "";}
+    }
     conn.Close();
+    if(n<0){if(err)*err="Recv failed";return "";}
     size_t he=resp.find("\r\n\r\n");
     if(he==std::string::npos){if(err)*err="Bad response";return "";}
     std::string headers=resp.substr(0,he);
@@ -213,6 +243,16 @@ std::string RequestRaw(const std::string& url,const std::string& method,const st
     if(status_code){
         size_t sp=headers.find(' ');
         if(sp!=std::string::npos){*status_code=atoi(headers.substr(sp+1).c_str());}
+    }
+    size_t cl_pos=headers.find("Content-Length:");
+    if(cl_pos==std::string::npos)cl_pos=headers.find("content-length:");
+    if(cl_pos!=std::string::npos){
+        size_t start=headers.find_first_of("0123456789",cl_pos);
+        size_t end=headers.find("\r\n",start);
+        if(start!=std::string::npos&&end!=std::string::npos){
+            long cl=atol(headers.substr(start,end-start).c_str());
+            if(cl>0&&cl<(long)MAX_RESP&&(long)body_resp.size()>cl)body_resp=body_resp.substr(0,(size_t)cl);
+        }
     }
     return body_resp;
 }
@@ -244,22 +284,52 @@ bool TestConnection(const std::string& url,const std::string& key,std::string& r
 }
 
 namespace Capture {
-std::vector<unsigned char> CaptureFrame(int& w,int& h){
-    GLint vp[4];glGetIntegerv(GL_VIEWPORT,vp);int x=vp[0],y=vp[1];w=vp[2];h=vp[3];
-    std::vector<unsigned char> px(w*h*4);GLint fbo;glGetIntegerv(GL_FRAMEBUFFER_BINDING,&fbo);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER,0);glReadPixels(x,y,w,h,GL_RGBA,GL_UNSIGNED_BYTE,px.data());glBindFramebuffer(GL_READ_FRAMEBUFFER,fbo);
-    for(int r=0;r<h/2;r++)for(int c=0;c<w*4;c++)std::swap(px[r*w*4+c],px[(h-1-r)*w*4+c]);
-    return px;
+void CaptureOnRenderThread(){
+    if(!g_Init)return;
+    time_t now=time(nullptr);
+    if(now-g_LastFrameCapture<1)return;
+    g_LastFrameCapture=now;
+    GLint vp[4];glGetIntegerv(GL_VIEWPORT,vp);int x=vp[0],y=vp[1],w=vp[2],h=vp[3];
+    if(w<=0||h<=0||w>4096||h>4096)return;
+    std::vector<unsigned char> px((size_t)w*h*4);
+    GLint fbo;glGetIntegerv(GL_FRAMEBUFFER_BINDING,&fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,0);
+    glReadPixels(x,y,w,h,GL_RGBA,GL_UNSIGNED_BYTE,px.data());
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,fbo);
+    for(int r=0;r<h/2;r++){
+        for(int c=0;c<w*4;c++){
+            std::swap(px[r*w*4+c],px[(h-1-r)*w*4+c]);
+        }
+    }
+    int nw=w,nh=h,md=512;
+    if(w>md||h>md){
+        if(w>h){nw=md;nh=(int)(h*(float)md/w);}
+        else{nh=md;nw=(int)(w*(float)md/h);}
+        if(nw<1)nw=1;if(nh<1)nh=1;
+        std::vector<unsigned char> resized((size_t)nw*nh*4,0);
+        float xr=(float)w/nw,yr=(float)h/nh;
+        for(int yy=0;yy<nh;yy++){
+            for(int xx=0;xx<nw;xx++){
+                int sx=std::min((int)(xx*xr),w-1),sy=std::min((int)(yy*yr),h-1);
+                for(int c=0;c<4;c++)resized[((size_t)yy*nw+xx)*4+c]=px[((size_t)sy*w+sx)*4+c];
+            }
+        }
+        px=std::move(resized);w=nw;h=nh;
+    }
+    std::vector<unsigned char> out;
+    if(!stbi_write_jpg_to_func([](void* ctx,void* data,int sz){auto*v=(std::vector<unsigned char>*)ctx;v->insert(v->end(),(unsigned char*)data,(unsigned char*)data+sz);},&out,w,h,4,px.data(),70))return;
+    if(out.empty())return;
+    pthread_mutex_lock(&g_FrameMtx);
+    g_FrameData=std::move(out);
+    g_FrameW=w;g_FrameH=h;
+    pthread_mutex_unlock(&g_FrameMtx);
 }
-std::vector<unsigned char> CompressJPEG(const std::vector<unsigned char>& rgba,int w,int h,int q){
-    std::vector<unsigned char> out;if(w<=0||h<=0)return out;
-    stbi_write_jpg_to_func([](void* ctx,void* data,int sz){auto*v=(std::vector<unsigned char>*)ctx;v->insert(v->end(),(unsigned char*)data,(unsigned char*)data+sz);},&out,w,h,4,rgba.data(),q);
-    return out;
-}
-std::vector<unsigned char> Resize(const std::vector<unsigned char>& rgba,int sw,int sh,int dw,int dh){
-    std::vector<unsigned char> out(dw*dh*4,0);float xr=(float)sw/dw,yr=(float)sh/dh;
-    for(int y=0;y<dh;y++)for(int x=0;x<dw;x++){int sx=std::min((int)(x*xr),sw-1),sy=std::min((int)(y*yr),sh-1);for(int c=0;c<4;c++)out[(y*dw+x)*4+c]=rgba[(sy*sw+sx)*4+c];}
-    return out;
+bool GetLatestFrame(std::vector<unsigned char>& out){
+    pthread_mutex_lock(&g_FrameMtx);
+    if(g_FrameData.empty()){pthread_mutex_unlock(&g_FrameMtx);return false;}
+    out=g_FrameData;
+    pthread_mutex_unlock(&g_FrameMtx);
+    return true;
 }
 }
 
@@ -278,16 +348,13 @@ void* Worker(void*){
         {pthread_mutex_lock(&mtx);timespec ts;clock_gettime(CLOCK_REALTIME,&ts);ts.tv_sec+=1;pthread_cond_timedwait(&cond,&mtx,&ts);pthread_mutex_unlock(&mtx);}
         if(!run||!Config::running)continue;time_t now=time(nullptr);if(now-last<Config::capture_interval)continue;last=now;
         if(Config::api_key.empty()&&Config::api_base.find("localhost")==std::string::npos)continue;
-        int w=0,h=0;auto px=Capture::CaptureFrame(w,h);if(px.empty()||w<=0||h<=0)continue;
-        int nw=w,nh=h,md=512;
-        if(w>md||h>md){if(w>h){nw=md;nh=(int)(h*(float)md/w);}else{nh=md;nw=(int)(w*(float)md/h);}px=Capture::Resize(px,w,h,nw,nh);w=nw;h=nh;}
-        auto jpg=Capture::CompressJPEG(px,w,h,70);if(jpg.empty())continue;
+        std::vector<unsigned char> jpg;if(!Capture::GetLatestFrame(jpg)||jpg.empty())continue;
         std::string b64=Base64Encode(jpg.data(),jpg.size());
         nlohmann::json req;req["model"]=Config::model_name;req["max_tokens"]=50;req["temperature"]=0.8f;
         nlohmann::json msgs=nlohmann::json::array();
-        nlohmann::json sys;sys["role"]="system";sys["content"]="你是弹幕评论员，根据图片生成20字以内的简短有趣弹幕，不要引号，像视频网站实时弹幕一样生动。直接输出弹幕内容。";msgs.push_back(sys);
+        nlohmann::json sys;sys["role"]="system";sys["content"]="You are a live chat commentator. Generate ONE short, fun comment (max 20 chars) about the game screen in the image. Like a real-time bullet comment on video sites. Just output the comment text directly, no quotes.";msgs.push_back(sys);
         nlohmann::json usr;usr["role"]="user";nlohmann::json ca=nlohmann::json::array();
-        nlohmann::json tp;tp["type"]="text";tp["text"]="请根据这张游戏画面生成一条有趣的弹幕评论。";ca.push_back(tp);
+        nlohmann::json tp;tp["type"]="text";tp["text"]="Generate one fun bullet comment for this game scene.";ca.push_back(tp);
         nlohmann::json ip;ip["type"]="image_url";ip["image_url"]["url"]="data:image/jpeg;base64,"+b64;ca.push_back(ip);
         usr["content"]=ca;msgs.push_back(usr);req["messages"]=msgs;
         std::string body=req.dump();std::string resp=HttpClient::Request(Config::api_base,"POST",body,Config::api_key);
@@ -311,6 +378,10 @@ static float g_LastT=0;
 static bool g_Testing=false;
 static std::string g_TestResult;
 static pthread_t g_TestThread=0;
+static pthread_mutex_t g_FrameMtx=PTHREAD_MUTEX_INITIALIZER;
+static std::vector<unsigned char> g_FrameData;
+static int g_FrameW=0,g_FrameH=0;
+static time_t g_LastFrameCapture=0;
 static float Scale(float v){return v*g_Dpi;}
 struct Island{ImVec2 pos;bool drag,dragS;ImVec2 dragOff,dragSt;}g_Isl={ImVec2(-1,-1),false,false,ImVec2(0,0),ImVec2(0,0)};
 
@@ -490,6 +561,7 @@ static void RenderUI(){
     ImGui_ImplOpenGL3_NewFrame();ImGui_ImplAndroid_NewFrame(g_W,g_H);
     ImGui::NewFrame();DrawUI();ImGui::Render();ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     RestoreGL(s);
+    if(Config::running)Capture::CaptureOnRenderThread();
 }
 
 static EGLBoolean(*orig_eglSwapBuffers)(EGLDisplay,EGLSurface)=nullptr;
