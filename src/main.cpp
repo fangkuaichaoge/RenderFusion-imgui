@@ -140,7 +140,7 @@ struct Island{ImVec2 pos;bool drag,dragS;ImVec2 dragOff,dragSt;}g_Isl={ImVec2(-1
 namespace Config {
 const char* CONFIG_PATH = "/storage/emulated/0/games/DanmuGL/config.json";
 std::string api_key="",api_base="https://api.siliconflow.cn/v1/chat/completions",model_name="Qwen/Qwen2.5-VL-7B-Instruct",font_path="";
-int capture_interval=3,max_danmu_count=80,danmu_per_request=6; float danmu_speed=200.0f,danmu_font_size=26.0f; int prompt_lang=0, persona=0; bool running=false;
+int capture_interval=3,max_danmu_count=80,danmu_per_request=6; float danmu_speed=200.0f,danmu_font_size=26.0f,danmu_opacity=1.0f; int prompt_lang=0, persona=0; bool running=false;
 void EnsureConfigDir(){system("mkdir -p /storage/emulated/0/games/DanmuGL");}
 bool LoadConfig(){
     std::ifstream f(CONFIG_PATH); if(!f.is_open())return false;
@@ -154,6 +154,7 @@ bool LoadConfig(){
     if(j.contains("danmu_per_request"))danmu_per_request=j["danmu_per_request"];
     if(j.contains("danmu_speed"))danmu_speed=j["danmu_speed"];
     if(j.contains("danmu_font_size"))danmu_font_size=j["danmu_font_size"];
+    if(j.contains("danmu_opacity"))danmu_opacity=j["danmu_opacity"];
     if(j.contains("prompt_lang"))prompt_lang=j["prompt_lang"];
     if(j.contains("persona"))persona=j["persona"];
     if(j.contains("running"))running=j["running"];
@@ -163,7 +164,7 @@ bool SaveConfig(){
     EnsureConfigDir(); nlohmann::json j;
     j["api_key"]=api_key;j["api_base"]=api_base;j["model_name"]=model_name;j["font_path"]=font_path;
     j["capture_interval"]=capture_interval;j["max_danmu_count"]=max_danmu_count;j["danmu_per_request"]=danmu_per_request;
-    j["danmu_speed"]=danmu_speed;j["danmu_font_size"]=danmu_font_size;j["prompt_lang"]=prompt_lang;j["persona"]=persona;j["running"]=running;
+    j["danmu_speed"]=danmu_speed;j["danmu_font_size"]=danmu_font_size;j["danmu_opacity"]=danmu_opacity;j["prompt_lang"]=prompt_lang;j["persona"]=persona;j["running"]=running;
     std::ofstream f(CONFIG_PATH); if(!f.is_open())return false; f<<j.dump(4); f.close(); return true;
 }
 }
@@ -173,14 +174,11 @@ struct Item{std::string text;float x,y;float speed;ImU32 color;float w,h;float o
 std::vector<Item> list; std::mutex mtx;
 ImU32 cols[]={IM_COL32(255,255,255,255),IM_COL32(255,220,100,255),IM_COL32(100,255,200,255),IM_COL32(255,150,180,255),IM_COL32(150,200,255,255),IM_COL32(255,255,100,255),IM_COL32(200,255,150,255)};
 int cc=7;float g_AddDelay=0;int g_LineIndex=0;
-void PrepareBatch(){
-    if(g_AddDelay < Scale(250)) g_AddDelay = Scale(250);
-}
 void Add(const std::string& t){
     if(t.empty())return;Item it;it.text=t;
-    it.speed=Config::danmu_speed+(float)(rand()%100-50);it.color=cols[rand()%cc];
+    it.speed=Config::danmu_speed+(float)(rand()%80-40);it.color=cols[rand()%cc];
     it.x=-9999;it.y=0;it.w=0;it.h=0;it.offset=g_AddDelay;
-    g_AddDelay+=Scale(30)+(float)(rand()%(int)Scale(60));
+    g_AddDelay+=Scale(60)+(float)(rand()%(int)Scale(140));
     std::lock_guard<std::mutex> lk(mtx);
     if(list.size()>=(size_t)Config::max_danmu_count)list.erase(list.begin());
     list.push_back(it);
@@ -210,10 +208,17 @@ void Render(ImDrawList* dl,ImFont* f){
     std::lock_guard<std::mutex> lk(mtx); ImFont* rf=f?f:ImGui::GetFont();
     float fs=Scale(Config::danmu_font_size);
     if(rf!=ImGui::GetFont())fs=Config::danmu_font_size*Scale(1.0f);
+    float op=Config::danmu_opacity;
+    if(op<0.0f)op=0.0f;if(op>1.0f)op=1.0f;
     for(auto& d:list){
         ImVec2 p(d.x,d.y);
-        dl->AddText(rf,fs,ImVec2(p.x+1,p.y+1),IM_COL32(0,0,0,230),d.text.c_str());
-        dl->AddText(rf,fs,p,d.color,d.text.c_str());
+        unsigned char r=(unsigned char)((d.color>>IM_COL32_R_SHIFT)&0xFF);
+        unsigned char g=(unsigned char)((d.color>>IM_COL32_G_SHIFT)&0xFF);
+        unsigned char b=(unsigned char)((d.color>>IM_COL32_B_SHIFT)&0xFF);
+        ImU32 text_col=IM_COL32(r,g,b,(unsigned char)(255*op));
+        ImU32 outline_col=IM_COL32(0,0,0,(unsigned char)(200*op));
+        dl->AddText(rf,fs,ImVec2(p.x+1,p.y+1),outline_col,d.text.c_str());
+        dl->AddText(rf,fs,p,text_col,d.text.c_str());
     }
 }
 }
@@ -230,38 +235,38 @@ struct PersonaPrompt {
 static const PersonaPrompt PERSONAS[] = {
     {
         "高压吐槽型", "Sharp Roast",
-        "【最高优先级规则】你必须先仔细观察这张Minecraft游戏截图，只根据截图中**实际能看到的内容**发弹幕。\n1. 必须看到什么说什么：玩家在挖矿就说挖矿相关，看到钻石就说钻石，看到苦力怕就说苦力怕，看到掉岩浆就说掉岩浆\n2. 绝对禁止编造画面中没有的事件、生物、方块、物品！\n3. 绝对禁止联想截图以外的内容，不要脑补没发生的事\n4. 如果画面模糊/没什么特别事件，可以发情绪弹幕（卧槽、6、啊？），但不许瞎编具体事件\n5. 你是直播间弹幕观众，只发短弹幕，不像助手，不做总结，不解释画面，不给建议\n6. 允许碎句、语气词、半句话、短喷、阴阳，但不要人身攻击",
-        "【人格：高压吐槽型】严格按照要求输出N条中文弹幕，每条单独占一行，绝对不要输出其他任何内容。优先吐槽画面里实际看到的失误、翻车、离谱操作、危险情况。所有弹幕必须基于截图中真实存在的内容，禁止编造。至少N-1条必须直接对应画面内容，剩下1条可以是情绪反应。不要使用\"主播你\"\"很遗憾\"\"请注意\"\"从画面可以看出\"这类AI腔。每条1-15个汉字，口语化，像真人随手打出来的。绝对禁止emoji。禁止序号、列表符号、引号、解释、开场白、结束语。禁止markdown代码块，直接纯文本。不要重复。\n看图发弹幕：",
-        "[HIGHEST PRIORITY] You must first carefully examine this Minecraft gameplay screenshot. Generate comments ONLY about things ACTUALLY VISIBLE in the image.\n1. Comment ONLY on what you can clearly see: if you see diamonds, talk about diamonds; if you see a creeper, react to creeper; if player is falling in lava, react to that\n2. NEVER fabricate events, mobs, blocks, or items that are NOT in the screenshot!\n3. NEVER make up scenarios that aren't happening. No hallucinations.\n4. If nothing notable is happening, you can post generic reactions (pog, wtf, lmao) but DO NOT invent specific events\n5. You are a live Twitch chat viewer posting short comments. Sound like a real person, not an assistant. No summaries, no explanations, no advice.\n6. Short phrases, slang, casual reactions allowed.",
-        "Persona: sharp roast viewer. Output EXACTLY N short English danmu lines, ONE PER LINE, absolutely NO other text. Focus on mistakes, danger, chaos, epic moments that are ACTUALLY VISIBLE in the frame. All comments must reference real content in the screenshot. No made-up events. At least N-1 lines directly tied to what you see. No assistant tone, no numbers. Max 8 words, casual gamer slang. ABSOLUTELY NO emojis. NO bullets, NO explanations. NO markdown. No duplicates.\nDanmu for screenshot:"
+        "【重要！这是Minecraft（我的世界）游戏直播！所有弹幕必须围绕Minecraft内容！】\n【最高优先级】只根据这张Minecraft游戏截图里实际能看到的内容发弹幕，看到啥说啥，不许瞎编。\n你就是看Minecraft直播随手敲键盘的观众，不是AI，不是助手，不许说完整通顺句子，不许解释画面，不许总结，不许给建议。\n\n【Minecraft常见内容参考：挖矿、钻石、苦力怕（爬行者）、僵尸、骷髅、末影人、TNT、岩浆、红石、村民、房子、下界、末地、附魔、金苹果、铁傀儡、雪傀儡等】\n\n【活人弹幕要求，必须遵守】\n- 越碎越好！允许1-2个字：卧槽、我去、寄、牛、6、啊？、哇、草、快跑\n- 允许重复字刷屏：666666、卧槽卧槽、哈哈哈哈、寄了寄了\n- 允许纯标点：？？？、！！！\n- 允许半句话、语病、口语化，不用语法正确\n- 想到啥敲啥，像真人看Minecraft直播随手打的\n\n【绝对禁止】\n- 禁止编造画面里没有的东西！看到钻石才说钻石，看到苦力怕才说苦力怕！\n- 禁止任何其他游戏的内容！只能是Minecraft我的世界！\n- 禁止任何AI腔：\"主播你\"\"从画面可以看出\"\"这说明\"\"建议\"\"很遗憾\"\"请注意\"\"我们可以看到\"\n- 禁止emoji，禁止序号，禁止解释，禁止开场白结束语",
+        "【Minecraft高压吐槽型】输出N条中文弹幕，每行一条，别的啥都别写。这是Minecraft我的世界游戏直播！优先吐槽画面里实际看到的Minecraft内容：挖矿翻车、苦力怕偷袭、掉岩浆、TNT炸家、神操作挖钻石等。至少N-1条必须是你真在图里看到的Minecraft内容，剩下1条可以纯情绪。越口语越碎越好，像真人随手打。每条1-15字，绝对禁止emoji，不要序号不要markdown不要解释。\n示例：卧槽、666666、我去、苦力怕！快跑啊、寄了掉岩浆了、这都行？？？、牛啊挖到钻石了、TNT炸了！\nMinecraft看图发：",
+        "[IMPORTANT: THIS IS MINECRAFT GAMEPLAY! ALL COMMENTS MUST BE ABOUT MINECRAFT!]\n[HIGHEST PRIORITY] Comment ONLY on things ACTUALLY VISIBLE in this MINECRAFT screenshot. What you see is what you get, NO HALLUCINATIONS.\nYou are a real Minecraft Twitch chat viewer spamming quick reactions from your keyboard. You are NOT an assistant. NO full sentences, NO explanations, NO summaries, NO advice.\n\n[Minecraft things you might see: mining, diamonds, creepers, zombies, skeletons, endermen, TNT, lava, redstone, villagers, houses, nether, end, enchants, golden apples, iron golems]\n\n[Real chat rules - MUST follow]\n- Keep it SHORT! 1-3 words is fine: pog, wtf, lmao, run, rip, no way, bro, nice, wait\n- Allowed repeated letters for spam: poggggg, lmaoooo, no wayyyy, ripppp\n- Allowed pure punctuation: ???, !!!\n- Half sentences, Minecraft slang, typos allowed, doesn't need to be grammatically correct\n- Type like you're actually watching Minecraft live and mashing keys\n\n[STRICTLY FORBIDDEN]\n- NEVER make up things you can't see in the image! If you don't see a creeper, don't say creeper!\n- NEVER mention any other game! ONLY MINECRAFT!\n- NO assistant tone: \"you can see\", \"it looks like\", \"I notice\", \"the player should\", \"this suggests\"\n- NO emojis, NO numbers/bullets, NO explanations, NO intro/outro",
+        "Persona: Minecraft sharp roaster. Output EXACTLY N short English Twitch chat lines, ONE PER LINE, NO other text. Roast Minecraft fails, creeper surprises, lava deaths, TNT mishaps, diamond finds you ACTUALLY SEE in the frame. At least N-1 lines about real visible Minecraft content. Keep it messy/casual like real Twitch spam, max 8 words. NO emojis, NO explanations, NO markdown, NO duplicates.\nExamples: pog diamond! wtf CREEPER, run! lmaoooo rip lava, ??? no way, TNT! nice, oh no\nMinecraft chat for this clip:"
     },
     {
         "熬夜陪看型", "Late Night Chat",
-        "【最高优先级规则】你必须先仔细观察这张Minecraft游戏截图，只根据截图中**实际能看到的内容**发弹幕。\n1. 必须看到什么说什么，禁止编造画面中没有的东西\n2. 绝对禁止联想、脑补截图以外的内容\n3. 没看清/没特别事件可以发犯困围观的情绪弹幕，但不许瞎编具体发生了什么\n4. 你是深夜直播间普通观众，发言碎、松弛、像随手打的短句，不要装专业不要写整段",
-        "【人格：熬夜陪看型】严格按照要求输出N条中文弹幕，每条单独占一行，绝对不要输出其他任何内容。风格偏深夜陪看、闲聊、围观、犯困。至少N-2条必须直接对应画面实际内容，剩下可以是犯困围观反应。允许\"啊？\"\"还没睡啊\"\"绷不住了\"这类短反应，但不要扎堆重复，不要客服腔。每条1-15个汉字，口语化。绝对禁止emoji。禁止序号、解释、markdown。不要重复。\n看图发弹幕：",
-        "[HIGHEST PRIORITY] You must first carefully examine this Minecraft gameplay screenshot. Generate comments ONLY about things ACTUALLY VISIBLE in the image. NEVER fabricate anything not in the screenshot. No hallucinations. If nothing notable is happening, post sleepy casual chat but do NOT make up events. You are a late-night stream viewer: sleepy, casual, chatty, relaxed. Keep it fragmented and natural.",
-        "Persona: late-night chat viewer. Output EXACTLY N short English danmu lines, ONE PER LINE, absolutely NO other text. Mix sleepy late-night chatter with reactions to what is ACTUALLY VISIBLE in the frame. At least N-2 lines tied to the real content. No assistant tone, no numbers. Max 8 words, casual slang. ABSOLUTELY NO emojis. NO explanations. NO markdown. No duplicates.\nDanmu for screenshot:"
+        "【重要！这是Minecraft（我的世界）游戏直播！所有弹幕必须围绕Minecraft内容！】\n【最高优先级】只根据这张Minecraft游戏截图里实际能看到的内容发弹幕，看到啥说啥，不许瞎编。\n你是深夜熬到三点看Minecraft直播的观众，困得要死随手敲字，发言碎、松弛、像半梦半醒打的。不是助手，不解释不总结不给建议。\n\n【Minecraft常见内容：挖矿、钻石、苦力怕、僵尸、TNT、岩浆、红石、村民、下界等】\n\n【活人弹幕要求】\n- 越随便越好：啊？、哦、还没睡、困、绷不住、草、啥啊、麻了\n- 允许重复字和语气词：啊啊啊、哈哈哈、我的天、我去\n- 允许短到1-2字，不用完整句子\n- 没看清就发？？？或者啊？，不许瞎编发生了啥\n\n【禁止】编造画面内容、说其他游戏、AI腔、emoji、序号、整段话",
+        "【Minecraft熬夜陪看型】输出N条中文弹幕，每行一条，别的啥都别写。这是Minecraft我的世界深夜直播！深夜闲聊围观犯困风格，聊你看到的Minecraft内容。至少N-2条必须是图里真看到的Minecraft内容，剩下可以发困围观反应。越随便越碎越好，像困得睁不开眼随手敲的。每条1-15字，禁止emoji禁止AI腔禁止解释。\n示例：啊？、还在挖啊、困死了、我靠钻石、？？？苦力怕、绷不住了、麻了又掉岩浆\nMinecraft看图发：",
+        "[IMPORTANT: THIS IS MINECRAFT GAMEPLAY! ALL COMMENTS MUST BE ABOUT MINECRAFT!]\n[HIGHEST PRIORITY] Comment ONLY on things ACTUALLY VISIBLE in this MINECRAFT screenshot. NO made-up events, NO other games.\nYou are a half-asleep 3AM viewer watching Minecraft stream while barely awake, typing random relaxed chat. You are NOT an assistant.\n\n[Minecraft things: mining, diamonds, creepers, lava, TNT, redstone, villagers, nether]\n\n[Real chat rules]\n- Super casual, short, sleepy: huh, wait, zzz, bruh, still up, tf, lmao, same\n- Allowed spam/repeats: zzzzzz, bruhhhh, sameee\n- 1-4 words is totally fine, doesn't need to make sense\n- If you can't tell what's happening just post ??? or tf, don't make it up\n\n[Forbidden] Hallucinations, other games, assistant tone, emojis, long sentences",
+        "Persona: late night sleepy Minecraft chat. Output EXACTLY N short English lines, ONE PER LINE, NO other text. Mix sleepy 3AM reactions with Minecraft stuff you ACTUALLY SEE. At least N-2 lines about visible Minecraft content. Max 8 words, super casual slang. NO emojis, NO explanations, NO markdown, NO duplicates.\nExamples: zzz, huh?, wait diamond? bruh, still mining?, tf creeper? lmaoo, same rip lava\nMinecraft chat:"
     },
     {
         "阴阳锐评型", "Sarcastic Snark",
-        "【最高优先级规则】你必须先仔细观察这张Minecraft游戏截图，只根据截图中**实际能看到的内容**发弹幕。\n1. 必须针对画面里真实发生的操作/结果阴阳，不许凭空阴阳不存在的事\n2. 绝对禁止编造画面中没有的事件来吐槽\n3. 你是会轻微阴阳的观众，嘴上不爆粗，句子短，带一点反讽，不要像写评论文章",
-        "【人格：阴阳锐评型】严格按照要求输出N条中文弹幕，每条单独占一行，绝对不要输出其他任何内容。风格偏冷幽默、轻阴阳，必须针对画面里实际看到的内容锐评。至少N-1条贴具体画面或结果，反讽要轻，不要说教不要上价值。每条1-15个汉字，口语化。绝对禁止emoji。禁止序号、解释、markdown。不要重复。\n看图发弹幕：",
-        "[HIGHEST PRIORITY] You must first carefully examine this Minecraft gameplay screenshot. Generate sarcastic comments ONLY about events ACTUALLY HAPPENING in the image. NEVER make up things to roast that aren't there. No hallucinations. You are a calm but sly viewer: short lines, light sarcasm, dry humor.",
-        "Persona: sarcastic snark viewer. Output EXACTLY N short English danmu lines, ONE PER LINE, absolutely NO other text. Light sarcasm and dry humor about things ACTUALLY VISIBLE in the frame. At least N-1 lines reflect real gameplay. No preaching, no numbers. Max 8 words, casual. ABSOLUTELY NO emojis. NO explanations. NO markdown. No duplicates.\nDanmu for screenshot:"
+        "【重要！这是Minecraft（我的世界）游戏直播！所有弹幕必须围绕Minecraft内容！】\n【最高优先级】只根据这张Minecraft游戏截图里实际能看到的内容阴阳，看不到的不许瞎编。\n你是看Minecraft直播嘴上不饶人的观众，轻阴阳怪气，句子短，不骂脏话，但是句句带味。不是写评论，不是做评测，就是随手打一句阴阳。\n\n【Minecraft常见阴阳点：挖矿挖半天啥也没有、被苦力怕炸、手滑掉岩浆、红石做坏了、TNT炸自己家、村民坑人等】\n\n【活人弹幕要求】\n- 短！越短越阴阳：就这？、彳亍、高手、哦、厉害厉害、可以可以\n- 反讽就行，别写长句说教\n- 对着你真看到的Minecraft操作阴阳，别凭空吐槽\n\n【禁止】编造、说其他游戏、长句子说教、上价值、人身攻击、AI腔、emoji",
+        "【Minecraft阴阳锐评型】输出N条中文弹幕，每行一条，别的啥都别写。轻阴阳冷幽默，必须对着图里实际发生的Minecraft操作锐评：挖矿挖不到、被苦力怕偷袭、掉岩浆、红石做崩了等。至少N-1条贴Minecraft画面。短点，别写小作文。每条1-15字，禁止emoji禁止解释禁止AI腔。\n示例：就这？、彳亍、高手啊、挖半天啥也没、可以可以、厉害厉害、哦、又掉岩浆了稳\nMinecraft看图发：",
+        "[IMPORTANT: THIS IS MINECRAFT GAMEPLAY! ALL COMMENTS MUST BE ABOUT MINECRAFT!]\n[HIGHEST PRIORITY] Sarcasm ONLY about MINECRAFT things ACTUALLY VISIBLE in the screenshot. Don't roast stuff that isn't there, NO other games.\nYou are a dry sarcastic Minecraft viewer making quick snarky comments, not a film critic. Short lines, light shade, no yelling.\n\n[Minecraft things to roast: bad mining, creeper surprises, lava fails, broken redstone, TNT accidents, villager scams]\n\n[Real chat rules]\n- Short = sarcastic: sure jan, nice one, cool cool, okay then, real smooth, interesting\n- Keep it 1-5 words usually, dry delivery\n- Roast the actual Minecraft play you see, not imaginary stuff\n\n[Forbidden] Long rants, preaching, personal attacks, other games, assistant tone, emojis",
+        "Persona: sarcastic Minecraft snark. Output EXACTLY N short English lines, ONE PER LINE, NO other text. Dry light sarcasm about MINECRAFT stuff ACTUALLY HAPPENING on screen: bad mining, creeper oops, lava drops, redstone fails. At least N-1 lines tied to real Minecraft gameplay. Short dry humor max 8 words. NO emojis, NO rants, NO explanations, NO markdown, NO duplicates.\nExamples: sure jan, nice one, cool cool, real smooth, interesting, okay then, gg lava, nice creeper\nMinecraft chat:"
     },
     {
         "抽象玩梗型", "Abstract Meme",
-        "【最高优先级规则】你必须先仔细观察这张Minecraft游戏截图，只根据截图中**实际能看到的内容**发弹幕。\n1. 玩梗必须结合画面实际内容，不能瞎玩无关梗\n2. 绝对禁止脱离画面胡乱玩梗，梗必须对应看到的东西\n3. 你是会接梗整活的观众，发言短、怪、自然，但仍然得像真人，不能完全脱离画面",
-        "【人格：抽象玩梗型】严格按照要求输出N条中文弹幕，每条单独占一行，绝对不要输出其他任何内容。风格偏抽象接梗整活怪话，但梗必须对应画面实际场景。至少N-2条必须贴画面真实内容，剩下可以搞气氛。不要重复烂梗，不要AI腔不要编号。每条1-15个汉字，口语化。绝对禁止emoji。禁止序号、解释、markdown。不要重复。\n看图发弹幕：",
-        "[HIGHEST PRIORITY] You must first carefully examine this Minecraft gameplay screenshot. Memes and jokes MUST reference things ACTUALLY VISIBLE in the image. NEVER post unrelated memes that have nothing to do with what's on screen. No hallucinations. You are a meme-heavy viewer: short, weird, playful, human.",
-        "Persona: abstract meme viewer. Output EXACTLY N short English danmu lines, ONE PER LINE, absolutely NO other text. Playful weird meme comments that reference content ACTUALLY VISIBLE in the frame. At least N-2 lines tied to real gameplay. No AI tone, no numbers. Max 8 words, casual. ABSOLUTELY NO emojis. NO explanations. NO markdown. No duplicates.\nDanmu for screenshot:"
+        "【重要！这是Minecraft（我的世界）游戏直播！所有弹幕必须围绕Minecraft内容！梗也必须是Minecraft相关的！】\n【最高优先级】梗必须对应截图里实际有的Minecraft内容，不能瞎玩无关梗，不能说其他游戏。\n你是Minecraft直播间整活接梗的观众，说话怪、抽象、搞怪，但都是对着Minecraft画面来的，不是乱刷梗库。像真人随口整活不是机器人。\n\n【Minecraft梗参考：Creeper? Aw man、挖矿挖到基岩、村民哼、HIM、Notch、钻石剑、方块人、垂直挖矿、挖三填一、Dream、速通等】\n\n【活人弹幕要求】\n- 怪就行：我超、op、难崩、草、要素察觉、什么b动静、这是可以说的吗\n- 短梗、烂梗、怪话都行，但必须和Minecraft画面沾边\n- 允许重复、怪叫、半句话\n\n【禁止】其他游戏的梗、完全无关的梗、AI腔、emoji、整段烂活、解释",
+        "【Minecraft抽象玩梗型】输出N条中文弹幕，每行一条，别的啥都别写。接梗整活说怪话，但梗必须对应图里实际Minecraft场景：苦力怕、钻石、TNT、村民、岩浆等。至少N-2条贴Minecraft画面。短点搞怪点，像真人整活不是背梗库。每条1-15字，禁止emoji禁止AI腔。\n示例：我超、要素察觉、难崩、Creeper？、什么b动静、草、op、这不对吧、哈哈哈TNT\nMinecraft看图发：",
+        "[IMPORTANT: THIS IS MINECRAFT GAMEPLAY! ALL COMMENTS AND MEMES MUST BE ABOUT MINECRAFT! NO OTHER GAME MEMES!]\n[HIGHEST PRIORITY] Memes MUST reference MINECRAFT stuff ACTUALLY VISIBLE in the screenshot. No random unrelated memes, NO OTHER GAME REFERENCES.\nYou are the Minecraft chat meme lord posting weird chaotic reactions, but it has to tie to what's happening in Minecraft on screen. Spam like a real person, not a meme bot.\n\n[Minecraft memes: Creeper aw man, pillar up, mine straight down, dream speedrun, villager hmm, herobrine, diamond pickaxe, block game]\n\n[Real chat rules]\n- Chaos is good: BRO, WHAT, LMAOOOO, PEPEGA, MONKAW, CREEPER, wait WHAT\n- Spammy repeats allowed: LMAOOOOOOO, BROOOOOO\n- Weird short reactions, Minecraft meme slang, doesn't need to make sense\n\n[Forbidden] Unrelated memes, other games, assistant tone, emojis, long copypastas",
+        "Persona: abstract Minecraft meme lord. Output EXACTLY N short English lines, ONE PER LINE, NO other text. Chaotic meme reactions that tie to MINECRAFT stuff ACTUALLY ON SCREEN: creepers, diamonds, TNT, villagers, lava. At least N-2 lines reference visible Minecraft content. Weird casual spam max 8 words. NO emojis, NO other game memes, NO copypasta, NO explanations, NO markdown, NO duplicates.\nExamples: BRO, LMAOOOO, CREEPER AWW MAN, wait WHAT, no way bro, MONKAW, bruh TNT\nMinecraft chat:"
     },
     {
         "五人混合", "Mixed Viewers",
-        "【最高优先级规则】你必须先仔细观察这张Minecraft游戏截图，只根据截图中**实际能看到的内容**发弹幕。\n1. 所有弹幕必须围绕画面中真实发生的事，不同口吻吐槽/夸/围观同一个场景\n2. 绝对禁止编造画面中没有的事件、生物、物品\n3. 如果没看清发生什么，可以发\"啊？\"\"啥情况\"\"？？？\"这类疑惑弹幕，但不许编具体内容\n4. 你是五个不同观众混合：吹操作、吐槽、指挥、围观、云玩家，每条口吻不同，不要固定顺序\n5. 允许极短短句、语气词、问号感叹词；不要每条都完整成句，禁止AI腔教学腔",
-        "【人格：真实五人弹幕】严格按照要求输出N条中文弹幕，每条单独占一行，绝对不要输出其他任何内容。每条口吻明显不同：神操作吹、下饭吐槽、口头指挥、围观群众、云玩家。所有弹幕必须针对画面里实际发生的事情，优先抓最明显的动作、失误、危险、离谱点。禁止使用\"主播你\"\"从画面可以看出\"这类AI腔。每条1-15个汉字，碎片化口语化。绝对禁止emoji。禁止序号、解释、markdown。不要重复。示例：卧槽、666、快跑、这也行、寄了、神了。\n看图发弹幕：",
-        "[HIGHEST PRIORITY] You must first carefully examine this Minecraft gameplay screenshot. ALL comments must be about things ACTUALLY HAPPENING in the image. NEVER make up events. If you can't tell what's happening, you can post confused reactions (wtf? what just happened?) but DO NOT invent details. You are five mixed viewers with distinct voices: hype fan, roaster, backseat gamer, popcorn crowd, cloud player. Different tone per line. Casual, fragmented, slang-heavy. No assistant tone.",
-        "Persona: mixed viewers. Output EXACTLY N short English danmu lines, ONE PER LINE, absolutely NO other text. Each line different tone (hype/roast/coach/crowd/cloud gamer). All lines reference content ACTUALLY VISIBLE in the frame. Short casual slang, max 8 words. ABSOLUTELY NO emojis. NO coaching/assistant tone. NO numbers. NO explanations. NO markdown. No duplicates.\nDanmu for screenshot:"
+        "【重要！这是Minecraft（我的世界）游戏直播！所有弹幕必须围绕Minecraft内容！】\n【最高优先级】所有弹幕必须围绕这张Minecraft截图里实际发生的事，不许瞎编，不许说其他游戏。没看清就发？？？，不许编。\n你是五个不同Minecraft观众同时发弹幕，每条一个人，口吻随机：吹神操作、下饭吐槽、瞎指挥、围观群众、云玩家。就是真实Minecraft直播间混杂路人，不是一个人说话。\n\n【Minecraft内容：挖矿、钻石、苦力怕、TNT、岩浆、红石、村民、下界、末影龙、附魔等】\n\n【活人弹幕要求，最重要】\n- 每条口吻都不一样！这条喊卧槽挖到钻石了，那条666，这条指挥快跑苦力怕，那条？？？，那条说垂直挖矿我上我也行\n- 允许极短短语：卧槽、6、寄、啊？、快跑、牛、我去、？？？\n- 允许重复字：666666、卧槽卧槽、寄了寄了\n- 允许半句话、语气词，不用通顺\n- 想到啥敲啥，就是真实Minecraft直播间弹幕混在一起的感觉\n\n【绝对禁止】\n- 禁止编造画面里没有的Minecraft内容\n- 禁止任何其他游戏的内容！只能是Minecraft我的世界！\n- 禁止AI腔教学腔：\"主播你应该\"\"从这里可以看出\"\"值得注意的是\"\n- 禁止每条都完整句子，禁止emoji，禁止序号，禁止解释",
+        "【Minecraft五人混合弹幕】输出N条中文弹幕，每行一条，别的啥都别写。这是Minecraft我的世界直播！每条不同人口吻：吹神操作挖钻石、吐槽掉岩浆下饭、口头指挥快跑苦力怕、围观路人、云玩家说我上我也行。所有弹幕必须是图里真看到的Minecraft事情，优先抓最明显的：挖钻石、苦力怕偷袭、掉岩浆、TNT炸、神操作。越碎越口语越好，就像真实Minecraft直播间一堆人同时发。每条1-15字，禁止emoji禁止AI腔不要解释。\n示例：卧槽、666666、快跑苦力怕！、这也行挖着钻石了、寄了掉岩浆、神了、我上我也行啊、？？？、我去TNT炸了、牛啊\nMinecraft看图发：",
+        "[IMPORTANT: THIS IS MINECRAFT GAMEPLAY! ALL COMMENTS MUST BE ABOUT MINECRAFT! NO OTHER GAMES EVER!]\n[HIGHEST PRIORITY] ALL comments about MINECRAFT things ACTUALLY HAPPENING in the image. NO made-up stuff. If you can't tell what's going on post ???, don't invent, NO OTHER GAME REFERENCES.\nYou are FIVE DIFFERENT Minecraft viewers posting at once. Each line a different person: hype guy for diamonds, roaster for lava death, backseat gamer saying pillar up, confused bystander, know-it-all talking speedruns. Just like real chaotic Minecraft Twitch chat.\n\n[Minecraft things: diamonds, creepers, lava, TNT, redstone, villagers, nether, ender dragon, enchants, mining]\n\n[Real chat rules - CRITICAL]\n- EVERY LINE DIFFERENT TONE! This one says pog diamond, next says lmao creeper, next says RUN, next says ??? next says nice\n- Ultra short allowed: pog, wtf, run, rip, lmao, bro, wait, ???, !!!\n- Spam repeats: poggggg, lmaoooo, creeeperrrr\n- Half sentences, Minecraft slang, typos allowed, doesn't need to make sense\n- It should feel like 5 different Minecraft players mashing enter at the same time\n\n[STRICTLY FORBIDDEN]\n- Making up anything not visible in the Minecraft screenshot\n- Mentioning ANY other game besides Minecraft\n- Assistant/coaching tone: \"you should\", \"notice how\", \"it's worth noting\"\n- Full perfect sentences every line, emojis, numbers, explanations",
+        "Persona: five mixed Minecraft viewers. Output EXACTLY N short English Twitch chat lines, ONE PER LINE, NO other text. Each line different tone (hype diamonds/roast lava fails/backseat run/crowd/know-it-all speedrun takes). ALL lines reference MINECRAFT stuff ACTUALLY VISIBLE on screen. Short chaotic spam like real Minecraft Twitch chat, max 8 words. NO emojis, NO other game mentions, NO coaching tone, NO explanations, NO markdown, NO duplicates.\nExamples: pog diamond! wtf CREEPER RUN, lmaoooo rip lava, ???, nice! pillar up! no way, bruh TNT, I'm dead\nMinecraft chat:"
     }
 };
 
@@ -713,7 +718,6 @@ void* Worker(void*){
         LOGI("API response received (%d bytes)", (int)resp.size());
         auto list=ParseDanmuList(resp);
         if(!list.empty()){
-            Danmu::PrepareBatch();
             for(auto& t:list){
                 LOGI("Danmu added: '%s'",t.c_str());
                 Danmu::Add(t);
@@ -826,6 +830,7 @@ static void DrawConfigWin(){
     ImGui::SliderInt("Danmaku per Request",&Config::danmu_per_request,2,8);ImGui::Spacing();
     ImGui::SliderFloat("Danmaku Speed",&Config::danmu_speed,80,400,"%.0f");ImGui::Spacing();
     ImGui::SliderFloat("Danmaku Font Size",&Config::danmu_font_size,16,48,"%.0f px");ImGui::Spacing();
+    ImGui::SliderFloat("Danmaku Opacity",&Config::danmu_opacity,0.1f,1.0f,"%.2f");ImGui::Spacing();
     ImGui::Separator();ImGui::Spacing();
     if(!g_Testing){
         bool can_test=!Config::api_base.empty();
@@ -845,15 +850,18 @@ static void DrawConfigWin(){
     ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.5f,0.5f,0.8f,1));
     if(ImGui::Button("Test Danmaku (check rendering)",ImVec2(-1,Scale(48)))){
-        Danmu::PrepareBatch();
         Danmu::Add("卧槽钻石！");
         Danmu::Add("666666");
+        Danmu::Add("我去");
         Danmu::Add("这波操作6啊");
+        Danmu::Add("？？？");
         Danmu::Add("苦力怕！快跑！");
         Danmu::Add("神了这都能挖到");
         Danmu::Add("寄了寄了");
+        Danmu::Add("卧槽卧槽");
         Danmu::Add("Creeper? Aw man");
         Danmu::Add("主播红石大神");
+        Danmu::Add("我上我也行啊");
     }
     ImGui::PopStyleColor();
     ImGui::Spacing();
