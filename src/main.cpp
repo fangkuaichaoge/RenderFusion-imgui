@@ -62,6 +62,25 @@ std::string Base64Encode(const unsigned char* buf, size_t len) {
     return ret;
 }
 
+static bool g_ShowUI=false;
+static ImFont *g_UIFont=nullptr,*g_DanmuFont=nullptr,*g_FontIsland=nullptr;
+static bool g_Init=false;
+static int g_W=0,g_H=0;
+static EGLContext g_Ctx=EGL_NO_CONTEXT;
+static EGLSurface g_Surf=EGL_NO_SURFACE;
+static float g_Dpi=1.0f;
+static std::string g_FontMsg;
+static float g_LastT=0;
+static bool g_Testing=false;
+static std::string g_TestResult;
+static pthread_t g_TestThread=0;
+static pthread_mutex_t g_FrameMtx=PTHREAD_MUTEX_INITIALIZER;
+static std::vector<unsigned char> g_FrameData;
+static int g_FrameW=0,g_FrameH=0;
+static time_t g_LastFrameCapture=0;
+static float Scale(float v){return v*g_Dpi;}
+struct Island{ImVec2 pos;bool drag,dragS;ImVec2 dragOff,dragSt;}g_Isl={ImVec2(-1,-1),false,false,ImVec2(0,0),ImVec2(0,0)};
+
 namespace Config {
 const char* CONFIG_PATH = "/storage/emulated/0/games/DanmuGL/config.json";
 std::string api_key="",api_base="http://localhost:8000/v1/chat/completions",model_name="gpt-4-vision-preview",font_path="";
@@ -365,25 +384,6 @@ void* Worker(void*){
 void Start(){if(thr)return;run=true;last=time(nullptr)-Config::capture_interval;pthread_create(&thr,nullptr,Worker,nullptr);}
 void Stop(){run=false;if(thr){pthread_cond_signal(&cond);pthread_join(thr,nullptr);thr=0;}}
 }
-
-static bool g_ShowUI=false;
-static ImFont *g_UIFont=nullptr,*g_DanmuFont=nullptr,*g_FontIsland=nullptr;
-static bool g_Init=false;
-static int g_W=0,g_H=0;
-static EGLContext g_Ctx=EGL_NO_CONTEXT;
-static EGLSurface g_Surf=EGL_NO_SURFACE;
-static float g_Dpi=1.0f;
-static std::string g_FontMsg;
-static float g_LastT=0;
-static bool g_Testing=false;
-static std::string g_TestResult;
-static pthread_t g_TestThread=0;
-static pthread_mutex_t g_FrameMtx=PTHREAD_MUTEX_INITIALIZER;
-static std::vector<unsigned char> g_FrameData;
-static int g_FrameW=0,g_FrameH=0;
-static time_t g_LastFrameCapture=0;
-static float Scale(float v){return v*g_Dpi;}
-struct Island{ImVec2 pos;bool drag,dragS;ImVec2 dragOff,dragSt;}g_Isl={ImVec2(-1,-1),false,false,ImVec2(0,0),ImVec2(0,0)};
 
 struct GLSt{GLint prog,tex,aBuf,eBuf,vao,fbo,vp[4],sc[4],bSrc,bDst,bSrcA,bDstA;GLboolean blend,cull,depth,scissor,stencil,dither;GLint front,act;};
 static void SaveGL(GLSt&s){
