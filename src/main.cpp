@@ -22,7 +22,10 @@
 #include <cmath>
 #include <fstream>
 #include <sstream>
+#include <chrono>
+#include <iomanip>
 #include <ctime>
+#include <sys/stat.h>
 #include <nlohmann/json.hpp>
 
 #include "mbedtls/net_sockets.h"
@@ -61,6 +64,58 @@ std::string Base64Encode(const unsigned char* buf, size_t len) {
     if(i){for(j=i;j<3;j++)a3[j]='\0';a4[0]=(a3[0]&0xfc)>>2;a4[1]=((a3[0]&0x03)<<4)+((a3[1]&0xf0)>>4);a4[2]=((a3[1]&0x0f)<<2)+((a3[2]&0xc0)>>6);a4[3]=a3[2]&0x3f;for(j=0;j<(i+1);j++)ret+=base64_chars[a4[j]];while(i++<3)ret+='=';}
     return ret;
 }
+
+namespace Logger {
+    static FILE* g_LogFile=nullptr;
+    static std::mutex g_LogMtx;
+    static std::string g_LastError;
+    static int g_DanmuCount=0;
+    static int g_FrameCount=0;
+    static int g_RequestCount=0;
+    static int g_ErrorCount=0;
+    
+    void Init(){
+        std::lock_guard<std::mutex> lk(g_LogMtx);
+        if(g_LogFile)return;
+        mkdir("/storage/emulated/0/games",0755);
+        mkdir("/storage/emulated/0/games/DanmuGL",0755);
+        g_LogFile=fopen("/storage/emulated/0/games/DanmuGL/log.txt","w");
+        if(g_LogFile){
+            setvbuf(g_LogFile,NULL,_IOLBF,1024);
+            time_t now=time(nullptr);
+            fprintf(g_LogFile,"=== DanmuGL started at %s===\n",ctime(&now));
+        }
+    }
+    
+    std::string TimeStr(){
+        using namespace std::chrono;
+        auto now=system_clock::now();
+        auto t=system_clock::to_time_t(now);
+        auto ms=duration_cast<milliseconds>(now.time_since_epoch())%1000;
+        std::ostringstream oss;
+        struct tm tm;localtime_r(&t,&tm);
+        oss<<std::put_time(&tm,"%H:%M:%S")<<"."<<std::setfill('0')<<std::setw(3)<<ms.count();
+        return oss.str();
+    }
+    
+    void Write(const char* tag,const char* level,const char* fmt,...){
+        std::lock_guard<std::mutex> lk(g_LogMtx);
+        va_list args;char buf[2048];va_start(args,fmt);vsnprintf(buf,sizeof(buf),fmt,args);va_end(args);
+        std::string line="["+TimeStr()+"] ["+std::string(level)+"] "+buf;
+        if(g_LogFile){fprintf(g_LogFile,"%s\n",line.c_str());}
+        __android_log_print(ANDROID_LOG_INFO,"DanmuGL","[%s] %s",level,buf);
+        if(strcmp(level,"E")==0||strcmp(level,"W")==0){g_LastError=std::string(level)+": "+buf;}
+    }
+    
+    void IncFrame(){g_FrameCount++;}
+    void IncRequest(){g_RequestCount++;}
+    void IncDanmu(){g_DanmuCount++;}
+    void IncError(){g_ErrorCount++;g_LastError.clear();}
+    void SetLastError(const std::string& s){g_LastError=s;}
+}
+#define LOGI(...) Logger::Write("DanmuGL","I",__VA_ARGS__)
+#define LOGW(...) Logger::Write("DanmuGL","W",__VA_ARGS__)
+#define LOGE(...) Logger::Write("DanmuGL","E",__VA_ARGS__)
 
 static bool g_ShowUI=false;
 static ImFont *g_UIFont=nullptr,*g_DanmuFont=nullptr,*g_FontIsland=nullptr;
@@ -108,24 +163,46 @@ bool SaveConfig(){
 }
 
 namespace Danmu {
-struct Item{std::string text;float x,y,speed;ImU32 color;float w,h,lifetime;};
+struct Item{std::string text;float x,y;int track;float speed;ImU32 color;float w;};
 std::vector<Item> list; std::mutex mtx;
-ImU32 cols[]={IM_COL32_WHITE,IM_COL32(255,200,100,255),IM_COL32(100,255,200,255),IM_COL32(255,150,150,255),IM_COL32(150,200,255,255),IM_COL32(255,255,100,255),IM_COL32(200,255,150,255)};
-int cc=7;
-void Add(const std::string& t){if(t.empty())return;Item it;it.text=t;it.speed=Config::danmu_speed+(float)(rand()%100-50);it.color=cols[rand()%cc];it.lifetime=0;std::lock_guard<std::mutex> lk(mtx);if(list.size()>=(size_t)Config::max_danmu_count)list.erase(list.begin());list.push_back(it);}
+ImU32 cols[]={IM_COL32(255,255,255,255),IM_COL32(255,220,100,255),IM_COL32(100,255,200,255),IM_COL32(255,150,180,255),IM_COL32(150,200,255,255),IM_COL32(255,255,100,255),IM_COL32(200,255,150,255)};
+int cc=7;const int NUM_TRACKS=4;
+struct Track{float end_x;};Track tracks[NUM_TRACKS];
+void Add(const std::string& t){
+    if(t.empty())return;Item it;it.text=t;it.speed=Config::danmu_speed+(float)(rand()%80-40);it.color=cols[rand()%cc];it.track=0;it.w=0;it.x=-9999;it.y=0;
+    int best_track=0;float best_end=-1;
+    for(int i=0;i<NUM_TRACKS;i++){if(tracks[i].end_x>best_end||best_end<0){best_end=tracks[i].end_x;best_track=i;}}
+    it.track=best_track;
+    std::lock_guard<std::mutex> lk(mtx);
+    if(list.size()>=(size_t)Config::max_danmu_count)list.erase(list.begin());
+    list.push_back(it);
+}
 void Update(float dt,int sw,int sh,ImFont* f){
-    std::lock_guard<std::mutex> lk(mtx); float lh=f?f->FontSize:24; int ml=(int)(sh/(lh*1.5f));
+    std::lock_guard<std::mutex> lk(mtx); ImFont* rf=f?f:ImGui::GetFont(); float fs=rf->FontSize;
+    for(int i=0;i<NUM_TRACKS;i++)tracks[i].end_x=(float)sw;
     for(auto it=list.begin();it!=list.end();){
-        Item& d=*it; ImVec2 ts=f?f->CalcTextSizeA(f->FontSize,FLT_MAX,0,d.text.c_str()):ImGui::CalcTextSize(d.text.c_str());
-        d.w=ts.x;d.h=ts.y;
-        if(d.lifetime==0){d.x=(float)sw+10;int li=rand()%std::max(1,ml);d.y=(float)li*lh*1.5f+lh;if(d.y>sh-lh)d.y=(float)sh-lh-20;}
-        d.x-=d.speed*dt;d.lifetime+=dt;
+        Item& d=*it;
+        ImVec2 ts=rf->CalcTextSizeA(fs,FLT_MAX,0,d.text.c_str());
+        d.w=ts.x;
+        float track_y=Scale(20)+d.track*fs*1.45f;
+        d.y=track_y;
+        if(d.x<-9000){d.x=(float)sw+20;}
+        d.x-=d.speed*dt;
+        if(d.x+d.w<tracks[d.track].end_x)tracks[d.track].end_x=d.x-Scale(10);
         if(d.x+d.w<-10)it=list.erase(it);else ++it;
     }
 }
 void Render(ImDrawList* dl,ImFont* f){
     std::lock_guard<std::mutex> lk(mtx); ImFont* rf=f?f:ImGui::GetFont(); float fs=rf->FontSize;
-    for(auto& d:list){ImVec2 p(d.x,d.y);ImVec2 ts=rf->CalcTextSizeA(fs,FLT_MAX,0,d.text.c_str());dl->AddRectFilled(ImVec2(p.x-4,p.y-2),ImVec2(p.x+ts.x+4,p.y+ts.y+2),IM_COL32(0,0,0,120),4);dl->AddText(rf,fs,p,d.color,d.text.c_str());}
+    float bar_h=fs*NUM_TRACKS*1.45f+Scale(30);
+    dl->AddRectFilled(ImVec2(0,0),ImVec2((float)g_W,bar_h),IM_COL32(0,0,0,70),0);
+    for(auto& d:list){
+        ImVec2 ts=rf->CalcTextSizeA(fs,FLT_MAX,0,d.text.c_str());
+        float padx=Scale(14),pady=Scale(5);
+        ImVec2 pmin(d.x-padx,d.y-pady),pmax(d.x+ts.x+padx,d.y+ts.y+pady);
+        dl->AddRectFilled(pmin,pmax,IM_COL32(0,0,0,150),Scale(14));
+        dl->AddText(rf,fs,ImVec2(d.x,d.y),d.color,d.text.c_str());
+    }
 }
 }
 
@@ -252,9 +329,11 @@ static std::string DecodeChunked(const std::string& in){
 
 std::string RequestRaw(const std::string& url,const std::string& method,const std::string& body,const std::string& key, const char** err, int* status_code) {
     Url p=ParseUrl(url);
+    LOGI("HTTP request: %s %s:%d%s (HTTPS=%d), body size=%d",method.c_str(),p.host.c_str(),p.port,p.path.c_str(),p.https?(int)1:0,(int)body.size());
     Connection conn;
     int ret = conn.Connect(p, err);
-    if (ret != 0) return "";
+    if (ret != 0){LOGE("Connect failed: %s (ret=%d)",*err?*err:"unknown",ret);return "";}
+    LOGI("Connected to %s:%d",p.host.c_str(),p.port);
     std::ostringstream req;
     req<<method<<" "<<p.path<<" HTTP/1.0\r\nHost: "<<p.host;
     if((!p.https&&p.port!=80)||(p.https&&p.port!=443))req<<":"<<p.port;
@@ -262,25 +341,29 @@ std::string RequestRaw(const std::string& url,const std::string& method,const st
     if(!key.empty())req<<"Authorization: Bearer "<<key<<"\r\n";
     req<<"Accept: application/json\r\nConnection: close\r\n\r\n"<<body;
     std::string rs=req.str();
-    if(conn.SendAll(rs.c_str(),rs.size())<=0){conn.Close();if(err)*err="Send failed";return "";}
+    LOGI("Sending request, headers size=%d, total=%d bytes",(int)(rs.size()-body.size()),(int)rs.size());
+    if(conn.SendAll(rs.c_str(),rs.size())<=0){conn.Close();if(err)*err="Send failed";LOGE("Send failed");return "";}
+    LOGI("Request sent, waiting for response...");
     const size_t MAX_RESP = 4*1024*1024;
     std::string resp;char buf[16384];int n;
     while((n=conn.RecvSome(buf,sizeof(buf)-1))>0){
         buf[n]=0;resp.append(buf,n);
-        if(resp.size()>MAX_RESP){if(err)*err="Response too large";return "";}
+        if(resp.size()>MAX_RESP){if(err)*err="Response too large";LOGE("Response too large (>%d bytes)",(int)MAX_RESP);return "";}
     }
     conn.Close();
-    if(n<0){if(err)*err="Recv failed";return "";}
+    if(n<0){if(err)*err="Recv failed";LOGE("Recv failed, n=%d, errno=%d",n,errno);return "";}
+    LOGI("Response received: %d bytes total",(int)resp.size());
     size_t he=resp.find("\r\n\r\n");
-    if(he==std::string::npos){if(err)*err="Bad response";return "";}
+    if(he==std::string::npos){if(err)*err="Bad response";LOGE("No header/body separator found");return "";}
     std::string headers=resp.substr(0,he);
     std::string body_resp=resp.substr(he+4);
+    LOGI("Headers: %s",headers.substr(0,std::min((int)headers.size(),500)).c_str());
     if(status_code){
         size_t sp=headers.find(' ');
-        if(sp!=std::string::npos){*status_code=atoi(headers.substr(sp+1).c_str());}
+        if(sp!=std::string::npos){*status_code=atoi(headers.substr(sp+1).c_str());LOGI("HTTP status code: %d",*status_code);}
     }
     bool chunked=(headers.find("Transfer-Encoding: chunked")!=std::string::npos||headers.find("transfer-encoding: chunked")!=std::string::npos);
-    if(chunked)body_resp=DecodeChunked(body_resp);
+    if(chunked){LOGI("Chunked encoding detected, decoding...");body_resp=DecodeChunked(body_resp);}
     size_t cl_pos=headers.find("Content-Length:");
     if(cl_pos==std::string::npos)cl_pos=headers.find("content-length:");
     if(cl_pos!=std::string::npos&&!chunked){
@@ -288,11 +371,14 @@ std::string RequestRaw(const std::string& url,const std::string& method,const st
         size_t end=headers.find("\r\n",start);
         if(start!=std::string::npos&&end!=std::string::npos){
             long cl=atol(headers.substr(start,end-start).c_str());
+            LOGI("Content-Length: %ld",cl);
             if(cl>0&&cl<(long)MAX_RESP&&(long)body_resp.size()>cl)body_resp=body_resp.substr(0,(size_t)cl);
         }
     }
     size_t endp=body_resp.rfind('}');
     if(endp!=std::string::npos&&endp+1<body_resp.size())body_resp=body_resp.substr(0,endp+1);
+    LOGI("Body size after processing: %d bytes",(int)body_resp.size());
+    Logger::IncRequest();
     return body_resp;
 }
 
@@ -329,11 +415,14 @@ void CaptureOnRenderThread(){
     if(now-g_LastFrameCapture<1)return;
     g_LastFrameCapture=now;
     GLint vp[4];glGetIntegerv(GL_VIEWPORT,vp);int x=vp[0],y=vp[1],w=vp[2],h=vp[3];
-    if(w<=0||h<=0||w>4096||h>4096)return;
+    LOGI("Capture viewport: %dx%d, FBO=%d",w,h,(int)glGetError());
+    if(w<=0||h<=0||w>4096||h>4096){LOGW("Invalid viewport size: %dx%d",w,h);return;}
     std::vector<unsigned char> px((size_t)w*h*4);
     GLint fbo;glGetIntegerv(GL_FRAMEBUFFER_BINDING,&fbo);
     glBindFramebuffer(GL_READ_FRAMEBUFFER,0);
+    GLenum err=glGetError();if(err!=GL_NO_ERROR)LOGW("GL error before read: 0x%x",err);
     glReadPixels(x,y,w,h,GL_RGBA,GL_UNSIGNED_BYTE,px.data());
+    err=glGetError();if(err!=GL_NO_ERROR)LOGE("glReadPixels failed: 0x%x",err);
     glBindFramebuffer(GL_READ_FRAMEBUFFER,fbo);
     for(int r=0;r<h/2;r++){
         for(int c=0;c<w*4;c++){
@@ -356,8 +445,10 @@ void CaptureOnRenderThread(){
         px=std::move(resized);w=nw;h=nh;
     }
     std::vector<unsigned char> out;
-    if(!stbi_write_jpg_to_func([](void* ctx,void* data,int sz){auto*v=(std::vector<unsigned char>*)ctx;v->insert(v->end(),(unsigned char*)data,(unsigned char*)data+sz);},&out,w,h,4,px.data(),70))return;
-    if(out.empty())return;
+    if(!stbi_write_jpg_to_func([](void* ctx,void* data,int sz){auto*v=(std::vector<unsigned char>*)ctx;v->insert(v->end(),(unsigned char*)data,(unsigned char*)data+sz);},&out,w,h,4,px.data(),70)){LOGE("JPEG compression failed");return;}
+    if(out.empty()){LOGE("JPEG output empty");return;}
+    LOGI("Frame captured: %dx%d, JPEG size: %d bytes",w,h,(int)out.size());
+    Logger::IncFrame();
     pthread_mutex_lock(&g_FrameMtx);
     g_FrameData=std::move(out);
     g_FrameW=w;g_FrameH=h;
@@ -375,11 +466,18 @@ bool GetLatestFrame(std::vector<unsigned char>& out){
 namespace AIClient {
 static pthread_t thr=0;static bool run=false;static pthread_mutex_t mtx=PTHREAD_MUTEX_INITIALIZER;static pthread_cond_t cond=PTHREAD_COND_INITIALIZER;static time_t last=0;
 std::string ParseDanmu(const std::string& resp){
+    LOGI("Parsing response JSON, length=%d",(int)resp.size());
     try{auto j=nlohmann::json::parse(resp);
+    if(j.contains("error")){LOGE("API returned error: %s",j.dump().c_str());return "";}
     if(j.contains("choices")&&j["choices"].is_array()&&j["choices"].size()>0){auto&c=j["choices"][0];
     if(c.contains("message")&&c["message"].contains("content")){std::string s=c["message"]["content"].get<std::string>();
+    LOGI("Raw content from API: '%s'",s.c_str());
     size_t a=s.find_first_not_of(" \n\r\t\"'"),b=s.find_last_not_of(" \n\r\t\"'");
-    if(a!=std::string::npos&&b!=std::string::npos)s=s.substr(a,b-a+1);if(s.size()>30)s=s.substr(0,30);return s;}}}catch(...){}
+    if(a!=std::string::npos&&b!=std::string::npos)s=s.substr(a,b-a+1);if(s.size()>30)s=s.substr(0,30);
+    LOGI("Parsed danmu text: '%s'",s.c_str());
+    return s;}}
+    else{LOGE("Response missing choices array, keys: %s",j.dump().substr(0,200).c_str());}
+    }catch(std::exception& e){LOGE("JSON parse error: %s",e.what());LOGI("Response preview: %s",resp.substr(0,std::min((int)resp.size(),500)).c_str());}catch(...){LOGE("Unknown JSON parse error");LOGI("Response preview: %s",resp.substr(0,std::min((int)resp.size(),500)).c_str());}
     return"";
 }
 void* Worker(void*){
@@ -399,11 +497,11 @@ void* Worker(void*){
         nlohmann::json ip;ip["type"]="image_url";ip["image_url"]["url"]="data:image/jpeg;base64,"+b64;ca.push_back(ip);
         usr["content"]=ca;msgs.push_back(usr);req["messages"]=msgs;
         std::string body=req.dump();std::string resp=HttpClient::Request(Config::api_base,"POST",body,Config::api_key);
-        if(resp.empty()){LOGW("Empty response from API");continue;}
+        if(resp.empty()){LOGW("Empty response from API");Logger::IncError();continue;}
         LOGI("API response received (%d bytes)", (int)resp.size());
         std::string txt=ParseDanmu(resp);
-        if(!txt.empty()){LOGI("Danmu: %s", txt.c_str());Danmu::Add(txt);}
-        else{LOGW("Failed to parse danmu, response preview: %s", resp.substr(0,std::min((int)resp.size(),200)).c_str());}
+        if(!txt.empty()){LOGI("Danmu added: %s (total: %d)", txt.c_str(),Logger::g_DanmuCount+1);Danmu::Add(txt);Logger::IncDanmu();}
+        else{LOGW("Failed to parse danmu, response preview: %s", resp.substr(0,std::min((int)resp.size(),200)).c_str());Logger::IncError();}
     }
     LOGI("AI worker stopped");
     return nullptr;
@@ -518,6 +616,18 @@ static void DrawConfigWin(){
     }
     ImGui::PopStyleColor();
     ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.6f,0.8f,1,1),"--- Status ---");
+    ImGui::Text("Frames captured: %d",Logger::g_FrameCount);
+    ImGui::Text("API requests: %d",Logger::g_RequestCount);
+    ImGui::Text("Danmaku received: %d",Logger::g_DanmuCount);
+    ImGui::Text("Active danmaku: %d",(int)Danmu::list.size());
+    ImGui::Text("Errors: %d",Logger::g_ErrorCount);
+    if(!Logger::g_LastError.empty()){
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(1,0.5f,0.5f,1),"Last error:");
+        ImGui::TextWrapped("%s",Logger::g_LastError.c_str());
+    }
+    ImGui::Spacing();
     if(ImGui::Button("Save Config",ImVec2(-1,Scale(56))))Config::SaveConfig();ImGui::Spacing();
     if(Config::running){
         ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.8f,0.3f,0.3f,1));
@@ -534,7 +644,7 @@ static void DrawConfigWin(){
 static bool DrawIsland(bool* clicked){
     ImGuiIO&io=ImGui::GetIO();ImDrawList*dl=ImGui::GetForegroundDrawList();
     float r=Scale(36),hr=r+Scale(20),dr=Scale(10);
-    if(g_Isl.pos.x<0)g_Isl.pos=ImVec2(io.DisplaySize.x-r-Scale(40),Scale(120));
+    if(g_Isl.pos.x<0)g_Isl.pos=ImVec2(io.DisplaySize.x-r-Scale(40),Scale(220));
     ImVec2 c=g_Isl.pos;bool inC=InCircle(io.MousePos.x,io.MousePos.y,c,hr);*clicked=false;
     if(!g_ShowUI){
         if(inC&&io.MouseClicked[0]&&!g_Isl.drag){g_Isl.dragSt=io.MousePos;g_Isl.dragOff=ImVec2(io.MousePos.x-c.x,io.MousePos.y-c.y);g_Isl.dragS=false;}
@@ -587,6 +697,7 @@ static void Setup(){
     }else{g_FontMsg="No Chinese font configured, Chinese danmaku may not display";}
     if(g_UIFont)io.FontDefault=g_UIFont;
     ImGui_ImplAndroid_Init(nullptr);ImGui_ImplOpenGL3_Init("#version 300 es");
+    Logger::Init();
     SetupStyle();g_Init=true;g_LastT=ImGui::GetTime();
     if(Config::running)AIClient::Start();
     LOGI("DanmuGL setup complete, DPI: %.2f", g_Dpi);
@@ -619,12 +730,37 @@ static void HandleTouch(int a,int,float x,float y){
     else if(a==AMOTION_EVENT_ACTION_UP||a==AMOTION_EVENT_ACTION_CANCEL)io.AddMouseButtonEvent(0,false);
 }
 
+static bool IsPointInAnyWindow(float x,float y){
+    if(!g_ShowUI)return false;
+    ImGuiContext* ctx=ImGui::GetCurrentContext();if(!ctx)return false;
+    for(ImGuiWindow* w:ctx->Windows){
+        if(!w->WasActive)continue;
+        ImVec2 min=w->Pos,max=ImVec2(w->Pos.x+w->Size.x,w->Pos.y+w->Size.y);
+        if(x>=min.x&&x<=max.x&&y>=min.y&&y<=max.y)return true;
+    }
+    return false;
+}
+
+static bool s_touchCaptured=false;
 static bool DispatchTouch(int a,int id,float x,float y){
     if(!g_Init)return false;
-    if(g_ShowUI){HandleTouch(a,id,x,y);return true;}
-    if(a==AMOTION_EVENT_ACTION_DOWN){if(InIsland(x,y)){s_islandTouched=true;HandleTouch(a,id,x,y);return true;}s_islandTouched=false;}
-    else if(a==AMOTION_EVENT_ACTION_MOVE){if(s_islandTouched){HandleTouch(a,id,x,y);return true;}}
-    else if(a==AMOTION_EVENT_ACTION_UP||a==AMOTION_EVENT_ACTION_CANCEL){if(s_islandTouched){HandleTouch(a,id,x,y);s_islandTouched=false;return true;}s_islandTouched=false;}
+    bool on_island=InIsland(x,y);
+    bool on_window=IsPointInAnyWindow(x,y);
+    if(a==AMOTION_EVENT_ACTION_DOWN){
+        s_islandTouched=on_island;
+        if(on_island||on_window){s_touchCaptured=true;HandleTouch(a,id,x,y);return true;}
+        if(g_ShowUI){g_ShowUI=false;}
+        s_touchCaptured=false;return false;
+    }
+    else if(a==AMOTION_EVENT_ACTION_MOVE){
+        if(s_touchCaptured||s_islandTouched){HandleTouch(a,id,x,y);return true;}
+        return false;
+    }
+    else if(a==AMOTION_EVENT_ACTION_UP||a==AMOTION_EVENT_ACTION_CANCEL){
+        bool cap=s_touchCaptured||s_islandTouched;
+        if(cap)HandleTouch(a,id,x,y);
+        s_touchCaptured=false;s_islandTouched=false;return cap;
+    }
     return false;
 }
 
