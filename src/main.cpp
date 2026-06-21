@@ -1,4 +1,4 @@
-﻿#include <jni.h>
+﻿﻿#include <jni.h>
 #include <android/input.h>
 #include <android/log.h>
 #include <EGL/egl.h>
@@ -140,7 +140,7 @@ struct Island{ImVec2 pos;bool drag,dragS;ImVec2 dragOff,dragSt;}g_Isl={ImVec2(-1
 namespace Config {
 const char* CONFIG_PATH = "/storage/emulated/0/games/DanmuGL/config.json";
 std::string api_key="",api_base="https://api.siliconflow.cn/v1/chat/completions",model_name="Qwen/Qwen2.5-VL-7B-Instruct",font_path="";
-int capture_interval=4,max_danmu_count=80,danmu_per_request=4; float danmu_speed=180.0f,danmu_font_size=26.0f; int prompt_lang=0; bool running=false;
+int capture_interval=4,max_danmu_count=80,danmu_per_request=4; float danmu_speed=180.0f,danmu_font_size=26.0f; int prompt_lang=0, persona=0; bool running=false;
 void EnsureConfigDir(){system("mkdir -p /storage/emulated/0/games/DanmuGL");}
 bool LoadConfig(){
     std::ifstream f(CONFIG_PATH); if(!f.is_open())return false;
@@ -155,6 +155,7 @@ bool LoadConfig(){
     if(j.contains("danmu_speed"))danmu_speed=j["danmu_speed"];
     if(j.contains("danmu_font_size"))danmu_font_size=j["danmu_font_size"];
     if(j.contains("prompt_lang"))prompt_lang=j["prompt_lang"];
+    if(j.contains("persona"))persona=j["persona"];
     if(j.contains("running"))running=j["running"];
     return true;
 }
@@ -162,7 +163,7 @@ bool SaveConfig(){
     EnsureConfigDir(); nlohmann::json j;
     j["api_key"]=api_key;j["api_base"]=api_base;j["model_name"]=model_name;j["font_path"]=font_path;
     j["capture_interval"]=capture_interval;j["max_danmu_count"]=max_danmu_count;j["danmu_per_request"]=danmu_per_request;
-    j["danmu_speed"]=danmu_speed;j["danmu_font_size"]=danmu_font_size;j["prompt_lang"]=prompt_lang;j["running"]=running;
+    j["danmu_speed"]=danmu_speed;j["danmu_font_size"]=danmu_font_size;j["prompt_lang"]=prompt_lang;j["persona"]=persona;j["running"]=running;
     std::ofstream f(CONFIG_PATH); if(!f.is_open())return false; f<<j.dump(4); f.close(); return true;
 }
 }
@@ -213,6 +214,55 @@ void Render(ImDrawList* dl,ImFont* f){
     }
 }
 }
+
+struct PersonaPrompt {
+    const char* name_zh;
+    const char* name_en;
+    const char* sys_zh;
+    const char* user_zh;
+    const char* sys_en;
+    const char* user_en;
+};
+
+static const PersonaPrompt PERSONAS[] = {
+    {
+        "高压吐槽型", "Sharp Roast",
+        "你是直播间弹幕观众，只负责发短弹幕。要像真人观众，不像助手，不做总结，不解释画面，不给建议。允许碎句、语气词、半句话、短喷、阴阳，但不要人身攻击。必须只能根据画面生成符合内容的弹幕，必须注重于游戏画面本身，不能输出其他无关内容，不能根据画面做出无端无关联想。",
+        "【人格：高压吐槽型】场景里如果有失误、翻车、离谱操作、空枪、断连、手忙脚乱等瞬间，优先抓这些点吐槽。严格按照要求输出N条中文弹幕，每条单独占一行，绝对不要输出其他任何内容。至少3条贴当前画面，其余可以补情绪反应。不要使用\"主播你\"\"很遗憾\"\"请注意\"\"从画面可以看出\"\"评论1\"\"弹幕1\"这类表达。每条1-15个汉字，口语化，像直播间观众发的。绝对禁止emoji表情。禁止序号、列表符号、引号、解释、开场白、结束语。禁止用markdown代码块包裹，直接输出纯文本。不要重复内容。只发像直播间真人会打出来的短句。\n看图发弹幕：",
+        "You are a live-stream viewer posting short roasty danmu. Sound like a real viewer, not an assistant. No summaries, no explanations, no advice. Generate comments ONLY based on what is actually visible in the gameplay screenshot. Focus strictly on the game content, do NOT make unrelated assumptions or hallucinations.",
+        "Persona: sharp roast viewer. Output EXACTLY N short English danmu lines, ONE PER LINE, absolutely NO other text. Focus on mistakes, whiffs, chaos, and embarrassing moments in the frame. At least 3 lines must stay tied to the current frame. No assistant tone, no numbered placeholders. Max 8 words each, casual gamer slang. ABSOLUTELY NO emojis. NO numbers, NO bullets, NO quotes, NO explanations, NO intro/outro. NO markdown code blocks, just plain text. No duplicates.\nDanmu for screenshot:"
+    },
+    {
+        "熬夜陪看型", "Late Night Chat",
+        "你是深夜直播间里的普通观众，发言碎、松弛、像随手打的短句。不要装专业，不要写整段。必须只能根据画面生成符合内容的弹幕，必须注重于游戏画面本身，不能输出其他无关内容，不能根据画面做出无端无关联想。",
+        "【人格：熬夜陪看型】严格按照要求输出N条中文弹幕，每条单独占一行，绝对不要输出其他任何内容。风格偏深夜陪看、闲聊、围观、犯困，但至少2条仍然要贴当前画面。允许\"啊？\"\"还没睡啊\"\"绷不住了\"这种自然短反应，但不要一轮里扎堆重复同一类词，也不要写成温柔客服腔。每条1-15个汉字，口语化。绝对禁止emoji表情。禁止序号、列表符号、引号、解释、开场白、结束语。禁止用markdown代码块包裹，直接输出纯文本。不要重复内容。\n看图发弹幕：",
+        "You are a late-night stream viewer: sleepy, casual, chatty, and relaxed. Keep it fragmented and natural. Generate comments ONLY based on what is actually visible in the gameplay screenshot. Focus strictly on the game content, do NOT make unrelated assumptions or hallucinations.",
+        "Persona: late-night chat viewer. Output EXACTLY N short English danmu lines, ONE PER LINE, absolutely NO other text. Mix sleepy late-night chatter with frame-aware reactions. At least 2 lines must stay tied to the frame. No assistant tone, no numbered placeholders. Max 8 words each, casual gamer slang. ABSOLUTELY NO emojis. NO numbers, NO bullets, NO quotes, NO explanations, NO intro/outro. NO markdown code blocks, just plain text. No duplicates.\nDanmu for screenshot:"
+    },
+    {
+        "阴阳锐评型", "Sarcastic Snark",
+        "你是直播间里会轻微阴阳的观众，嘴上不爆粗，句子短，带一点反讽。不要像写评论文章。必须只能根据画面生成符合内容的弹幕，必须注重于游戏画面本身，不能输出其他无关内容，不能根据画面做出无端无关联想。",
+        "【人格：阴阳锐评型】严格按照要求输出N条中文弹幕，每条单独占一行，绝对不要输出其他任何内容。风格偏冷幽默、轻阴阳、表面平静但句句带味。至少3条贴具体画面或结果，反讽要轻，不要说教，不要上价值，不要编号占位，也不要每句都端着。每条1-15个汉字，口语化。绝对禁止emoji表情。禁止序号、列表符号、引号、解释、开场白、结束语。禁止用markdown代码块包裹，直接输出纯文本。不要重复内容。\n看图发弹幕：",
+        "You are a calm but sly stream viewer. Keep the lines short, lightly sarcastic, and subtly sharp. Generate comments ONLY based on what is actually visible in the gameplay screenshot. Focus strictly on the game content, do NOT make unrelated assumptions or hallucinations.",
+        "Persona: scheming snark viewer. Output EXACTLY N short English danmu lines, ONE PER LINE, absolutely NO other text. Lines with light sarcasm and dry humor. At least 3 lines must reflect the frame or outcome. No preaching, no numbered placeholders. Max 8 words each, casual gamer slang. ABSOLUTELY NO emojis. NO numbers, NO bullets, NO quotes, NO explanations, NO intro/outro. NO markdown code blocks, just plain text. No duplicates.\nDanmu for screenshot:"
+    },
+    {
+        "抽象玩梗型", "Abstract Meme",
+        "你是直播间里会接梗整活的观众，但不是机器人刷库。发言要短、怪、自然，仍然得像真人。必须只能根据画面生成符合内容的弹幕，必须注重于游戏画面本身，不能输出其他无关内容，不能根据画面做出无端无关联想。",
+        "【人格：抽象玩梗型】严格按照要求输出N条中文弹幕，每条单独占一行，绝对不要输出其他任何内容。风格偏抽象、接梗、整活、怪话，但不能完全脱离当前画面。至少2条必须贴场景，其余可以做气氛反应。不要整批重复同一烂梗，不要AI腔，不要编号占位。每条1-15个汉字，口语化。绝对禁止emoji表情。禁止序号、列表符号、引号、解释、开场白、结束语。禁止用markdown代码块包裹，直接输出纯文本。不要重复内容。\n看图发弹幕：",
+        "You are a meme-heavy stream viewer who posts weird but natural reactions. Keep it short, playful, and human. Generate comments ONLY based on what is actually visible in the gameplay screenshot. Focus strictly on the game content, do NOT make unrelated assumptions or hallucinations.",
+        "Persona: abstract meme viewer. Output EXACTLY N short English danmu lines, ONE PER LINE, absolutely NO other text. Make them playful, weird, and meme-aware, but not detached from the frame. At least 2 lines must reference the frame. No AI tone, no numbered placeholders. Max 8 words each, casual gamer slang. ABSOLUTELY NO emojis. NO numbers, NO bullets, NO quotes, NO explanations, NO intro/outro. NO markdown code blocks, just plain text. No duplicates.\nDanmu for screenshot:"
+    },
+    {
+        "五人混合", "Mixed Viewers",
+        "你是五个真实直播间观众的混合，每条弹幕口吻都要不同：随机选择玩梗、复读刷屏、吐槽、夸操作、懵逼疑问、口头指挥、纯情绪反应。不要固定顺序，不要输出角色名，不要每轮都出现同一套口吻。允许极短、半句话、语气词、问号、感叹词；不要每条都完整成句。必须只能根据画面生成符合内容的弹幕，必须注重于游戏画面本身，不能输出其他无关内容，不能根据画面做出无端无关联想。禁止AI腔、总结腔、客服腔、教学腔、长句、说教、解释画面。",
+        "【人格：真实五人弹幕】严格按照要求输出N条中文弹幕，每条单独占一行，绝对不要输出其他任何内容。发言像真实直播间混杂路人，不是固定剧本。每条口吻明显不同：神操作吹、下饭吐槽、口头指挥、围观群众、云玩家。优先抓当前画面里最明显的动作、变化、结果、失误、危险、离谱点；允许少量气氛句。不要使用\"主播你\"\"很遗憾\"\"请注意\"\"从画面可以看出\"这类AI腔表达。每条1-15个汉字，口语化、碎片化。绝对禁止emoji表情。禁止序号、列表符号、引号、解释、开场白、结束语。禁止用markdown代码块包裹，直接输出纯文本。不要重复内容。示例：卧槽、666、快跑、这也行、寄了、神了、我上我也行。\n看图发弹幕：",
+        "You are five mixed live-stream viewers with distinct voices per line: meme lord, spam repeater, hype fan, harsh critic, clueless bystander. Casual, fragmented, slang-heavy. No AI assistant tone or textbook sentences. Generate comments ONLY based on what is actually visible in the gameplay screenshot. Focus strictly on the game content, do NOT make unrelated assumptions or hallucinations.",
+        "Persona: mixed viewers. Output EXACTLY N short English danmu lines, ONE PER LINE, absolutely NO other text. Each line with different tone: hype plays, roast feeds, quick calls, popcorn crowd, cloud gaming. Short casual lines tied to the frame. No coaching tone or textbook sentences. All comments in English. Max 8 words each. ABSOLUTELY NO emojis. NO numbers, NO bullets, NO quotes, NO explanations, NO intro/outro. NO markdown code blocks, just plain text. No duplicates.\nDanmu for screenshot:"
+    }
+};
+
+static const int PERSONA_COUNT = sizeof(PERSONAS)/sizeof(PERSONAS[0]);
 
 namespace HttpClient {
 std::mutex mtx;
@@ -624,19 +674,31 @@ void* Worker(void*){
         std::vector<unsigned char> jpg;if(!Capture::GetLatestFrame(jpg)||jpg.empty()){LOGW("No frame captured yet");continue;}
         LOGI("Sending request: %d bytes JPEG", (int)jpg.size());
         std::string b64=Base64Encode(jpg.data(),jpg.size());
-        nlohmann::json req;req["model"]=Config::model_name;req["max_tokens"]=800;req["temperature"]=1.2f;
+        nlohmann::json req;req["model"]=Config::model_name;req["max_tokens"]=800;req["temperature"]=0.9f;
         req["stream"]=false;
         nlohmann::json msgs=nlohmann::json::array();
         nlohmann::json sys;sys["role"]="system";
+        int pidx = Config::persona;
+        if(pidx<0)pidx=0;if(pidx>=PERSONA_COUNT)pidx=0;
+        const PersonaPrompt& p = PERSONAS[pidx];
+        std::string sys_prompt, user_prompt;
+        std::string num_str = std::to_string(Config::danmu_per_request);
         if(Config::prompt_lang==0){
-            sys["content"]="你是一个Minecraft游戏直播弹幕生成器，必须只能根据画面生成符合内容的弹幕，必须注重于游戏画面本身，不能输出其他无关内容，不能根据画面做出无端无关联想。严格按照要求输出"+std::to_string(Config::danmu_per_request)+"条弹幕，必须每条单独占一行，绝对不要输出其他任何内容。\n\n输出格式示例（必须完全按照这种格式，每行一条，不要序号）：\n卧槽钻石！\n666666\n苦力怕快跑啊\n神了这波操作\n挖到钻石了兄弟们\n寄了寄了\n\n要求：\n1. 必须输出正好"+std::to_string(Config::danmu_per_request)+"条，不能多也不能少\n2. 每条单独占一行，之间用换行分隔\n3. 每条1-15个汉字，口语化，像直播间观众发的\n4. 绝对禁止emoji表情\n5. 禁止序号、列表符号、引号、解释、开场白、结束语\n6. 禁止用markdown代码块包裹，直接输出纯文本\n7. 不要重复内容";
+            sys_prompt = p.sys_zh;
+            user_prompt = p.user_zh;
         }else{
-            sys["content"]="You are a Minecraft Twitch chat comment generator. Generate comments ONLY based on what is actually visible in the gameplay screenshot. Focus strictly on the game content, do NOT make unrelated assumptions or hallucinations. Output EXACTLY "+std::to_string(Config::danmu_per_request)+" comments, ONE PER LINE, absolutely NO other text.\n\nExample format (exactly like this, no numbers):\npog diamond!\nno way creeper\nLMAO rip\nOP plays bruh\ngg ez\nrip bozo\n\nRules:\n1. Output EXACTLY "+std::to_string(Config::danmu_per_request)+" comments, no more no less\n2. One comment per line, separated only by newlines\n3. Max 8 words each, casual gamer slang\n4. ABSOLUTELY NO emojis\n5. NO numbers, NO bullets, NO quotes, NO explanations, NO intro/outro\n6. NO markdown code blocks, just plain text\n7. No duplicates";
+            sys_prompt = p.sys_en;
+            user_prompt = p.user_en;
         }
+        size_t npos;
+        while((npos=user_prompt.find("N"))!=std::string::npos){
+            user_prompt.replace(npos,1,num_str);
+        }
+        sys["content"]=sys_prompt;
         msgs.push_back(sys);
         nlohmann::json usr;usr["role"]="user";nlohmann::json ca=nlohmann::json::array();
         nlohmann::json tp;tp["type"]="text";
-        tp["text"]=(Config::prompt_lang==0)?"这是Minecraft游戏画面，给我发几条弹幕！":"This is Minecraft gameplay, give me chat comments now!";
+        tp["text"]=user_prompt;
         ca.push_back(tp);
         nlohmann::json ip;ip["type"]="image_url";
         nlohmann::json iurl;iurl["url"]="data:image/jpeg;base64,"+b64;iurl["detail"]="low";
@@ -730,7 +792,7 @@ static void* TestThread(void* arg){
 }
 
 static void DrawConfigWin(){
-    ImGui::SetNextWindowSize(ImVec2(Scale(520),Scale(720)),ImGuiCond_FirstUseEver);ImGuiIO&io=ImGui::GetIO();
+    ImGui::SetNextWindowSize(ImVec2(Scale(540),Scale(780)),ImGuiCond_FirstUseEver);ImGuiIO&io=ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*0.5f,io.DisplaySize.y*0.5f),ImGuiCond_FirstUseEver,ImVec2(0.5f,0.5f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(Scale(24),Scale(24)));ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,Scale(20));
     ImGui::Begin("DanmuGL Settings",nullptr,ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoResize);
@@ -751,6 +813,10 @@ static void DrawConfigWin(){
     ImGui::TextColored(Primary,"Danmaku Settings");ImGui::Separator();ImGui::Spacing();
     const char* langs[]={"Chinese (中文)","English"};
     ImGui::Combo("Prompt Language",&Config::prompt_lang,langs,2);ImGui::Spacing();
+    const char* persona_items_zh[]={"高压吐槽型","熬夜陪看型","阴阳锐评型","抽象玩梗型","五人混合"};
+    const char* persona_items_en[]={"Sharp Roast","Late Night Chat","Sarcastic Snark","Abstract Meme","Mixed Viewers"};
+    const char** persona_items = (Config::prompt_lang==0) ? persona_items_zh : persona_items_en;
+    ImGui::Combo((Config::prompt_lang==0)?"弹幕风格":"Danmaku Style",&Config::persona,persona_items,PERSONA_COUNT);ImGui::Spacing();
     ImGui::SliderInt("Capture Interval (sec)",&Config::capture_interval,2,15);ImGui::Spacing();
     ImGui::SliderInt("Max Danmaku Count",&Config::max_danmu_count,10,200);ImGui::Spacing();
     ImGui::SliderInt("Danmaku per Request",&Config::danmu_per_request,2,8);ImGui::Spacing();
