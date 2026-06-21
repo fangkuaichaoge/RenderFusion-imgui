@@ -177,34 +177,73 @@ namespace Danmu {
 struct Item{std::string text;float x,y;float speed;ImU32 color;float w,h;float offset;};
 std::vector<Item> list; std::mutex mtx;
 std::vector<std::string> pending;
+std::vector<std::string> history;
 float pending_timer=0;
 float next_pending_interval=0.4f;
 ImU32 cols[]={IM_COL32(255,255,255,255),IM_COL32(255,220,100,255),IM_COL32(100,255,200,255),IM_COL32(255,150,180,255),IM_COL32(150,200,255,255),IM_COL32(255,255,100,255),IM_COL32(200,255,150,255)};
 int cc=7;float g_AddDelay=0;int g_LineIndex=0;
+static std::string NormalizeText(const std::string& s){
+    std::string out;
+    for(char c : s){
+        if(c==' '||c=='\t'||c=='\n'||c=='\r'||c=='!'||c=='?'||c=='。'||c=='！'||c=='？'||c=='.'||c==','||c=='，')continue;
+        out+=tolower((unsigned char)c);
+    }
+    return out;
+}
+static bool IsDuplicate(const std::string& t){
+    std::string nt=NormalizeText(t);
+    if(nt.empty())return true;
+    for(auto& s : pending){
+        if(NormalizeText(s)==nt)return true;
+    }
+    for(auto& d : list){
+        if(NormalizeText(d.text)==nt)return true;
+    }
+    for(auto& h : history){
+        if(NormalizeText(h)==nt)return true;
+    }
+    return false;
+}
 void AddImmediate(const std::string& t){
     if(t.empty())return;Item it;it.text=t;
     it.speed=Config::danmu_speed+(float)(rand()%80-40);it.color=cols[rand()%cc];
     it.x=-9999;it.y=0;it.w=0;it.h=0;it.offset=g_AddDelay;
     g_AddDelay+=Scale(30)+(float)(rand()%(int)Scale(70));
     std::lock_guard<std::mutex> lk(mtx);
+    history.push_back(t);
+    if(history.size()>30)history.erase(history.begin());
     if(list.size()>=(size_t)Config::max_danmu_count)list.erase(list.begin());
     list.push_back(it);
 }
 void Add(const std::string& t){
     if(t.empty())return;
     std::lock_guard<std::mutex> lk(mtx);
+    if(IsDuplicate(t))return;
     pending.push_back(t);
 }
 void Update(float dt,int sw,int sh,ImFont* f){
     std::string to_add;
     {
         std::lock_guard<std::mutex> lk(mtx);
-        pending_timer+=dt;
-        if(pending_timer>=next_pending_interval && !pending.empty()){
-            pending_timer=0;
-            next_pending_interval=0.35f+(float)(rand()%25)/100.0f;
-            to_add=pending.front();
+        while(!pending.empty()){
+            std::string candidate=pending.front();
             pending.erase(pending.begin());
+            if(!IsDuplicate(candidate)){
+                to_add=candidate;
+                break;
+            }
+        }
+        if(!to_add.empty()){
+            pending_timer+=dt;
+            if(pending_timer>=next_pending_interval){
+                pending_timer=0;
+                next_pending_interval=0.35f+(float)(rand()%25)/100.0f;
+            }else{
+                pending.insert(pending.begin(),to_add);
+                to_add.clear();
+            }
+        }else{
+            pending_timer=0;
         }
     }
     if(!to_add.empty()){
@@ -261,7 +300,7 @@ struct PersonaPrompt {
 static const PersonaPrompt PERSONAS[] = {
     {
         "高压吐槽型", "Sharp Roast",
-        "【最高优先级-死规则】这是Minecraft（我的世界）游戏直播截图。\n\n你只许评论这张图里**你清晰可见、一眼就能看到**的具体内容。如果你看不清楚画面里有什么，就只发情绪词（卧槽、666、？？？、我去、牛），**绝对不许主动猜任何物品、生物、事件的名字**。\n\n你就是看直播随手敲键盘的普通观众，不是AI，不许写完整通顺句子，不许解释画面，不许总结，不许给建议，不许说\"主播你\"。\n\n【死规则，违反就错】\n- 图里看不到的东西，**绝对不许提它的名字**！看不到钻石就不许说钻石，看不到苦力怕就不许说苦力怕，看不到红石就不许说红石，看不到岩浆就不许说岩浆！\n- 拿不准就发？？？或者感叹词，宁可不说话也不许瞎编\n- 最多一半弹幕可以说具体内容，剩下至少一半必须是纯情绪/感叹词\n- 越短越好，1-5个字最佳\n- 重复字刷屏是允许的\n\n【绝对禁止】\n- 编造任何画面里没有的东西\n- 提任何其他游戏\n- AI腔完整句子：\"从画面可以看出\"\"主播你应该\"\"我看到\"\n- emoji、序号、解释、开场白、markdown",
+        "【最高优先级-死规则】这是Minecraft（我的世界）游戏直播截图。\n\n你只许评论这张图里**你清晰可见、一眼就能看到**的具体内容。如果你看不清楚画面里有什么，就只发短情绪词/感叹/问号，**绝对不许主动猜任何物品、生物、事件的名字**。\n\n你就是看直播随手敲键盘的普通观众，不是AI，不许写完整通顺句子，不许解释画面，不许总结，不许给建议。\n\n【死规则，违反就错】\n- 图里看不到的东西，**绝对不许提它的名字**！\n- 拿不准就发短情绪词或者问号，宁可不说话也不许瞎编\n- **N条弹幕必须每一条内容都不一样，绝对禁止重复！**\n- 最多一半弹幕可以说具体内容，剩下至少一半必须是纯情绪/感叹，不描述具体东西\n- 越短越好，1-5个字最佳\n\n【绝对禁止】\n- 编造任何画面里没有的东西\n- 重复内容\n- 提任何其他游戏\n- AI腔完整句子\n- emoji、序号、解释、开场白、markdown",
         "【高压吐槽型】输出N条中文Minecraft直播弹幕，每行一条，除此之外啥都别写。\n\n规则：\n1. 最多一半弹幕说你**清晰看到**的具体Minecraft画面内容\n2. 剩下至少一半必须是纯情绪词/感叹词/？？？/666\n3. **绝对不许瞎猜画面里没有的东西！** 拿不准就发？？？或者卧槽，不要硬说是什么东西\n4. 口语化、短、碎，像真人随手敲的\n5. 禁止序号、emoji、解释、完整长句子\nMinecraft看图发：",
         "[TOP PRIORITY - STRICT RULE] This is a Minecraft gameplay screenshot.\n\nYou may ONLY comment on things you can CLEARLY, OBVIOUSLY see in the image. If you can't tell exactly what's happening, ONLY post reaction words (pog, wtf, lmao, ???, nice, bro). **NEVER guess the name of any item, mob, or event you can't clearly see.**\n\nYou are a real Twitch viewer spamming quick chat reactions. You are NOT an assistant. No full sentences, no explanations, no summaries, no advice.\n\n[STRICT RULES]\n- NEVER name things you cannot CLEARLY see. No diamond if you don't see it, no creeper if you don't see it, no redstone if you don't see it!\n- If unsure, post ??? or reactions only. Better to say nothing specific than to make it up\n- At LEAST half your lines must be pure reactions/exclamations, not describing content\n- Keep it SHORT: 1-4 words max\n- Spammy repeats allowed\n\n[FORBIDDEN]\n- Hallucinating anything not visible\n- Mentioning any other game\n- Assistant/commentary tone, full sentences\n- Emojis, numbers, explanations, markdown",
         "Persona: Minecraft sharp roaster. Output EXACTLY N short English Twitch chat lines, ONE PER LINE, NO other text.\n\nRules:\n1. At most half your lines reference something CLEARLY visible in the Minecraft screenshot\n2. At least half must be pure reactions: pog, wtf, lmao, ???, nice, bro, LETS GOO, etc.\n3. NEVER guess mobs/items you can't see. If unsure, just post ??? or reaction\n4. Short, messy, casual like real Twitch spam, max 5 words\nNO emojis, NO explanations, NO markdown, NO extra text.\nMinecraft chat:"
