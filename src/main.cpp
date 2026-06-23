@@ -1074,21 +1074,35 @@ static void Setup(){
     g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());
     const ImWchar* ranges=io.Fonts->GetGlyphRangesChineseFull();
     g_FontMsg="Using built-in font";
-    // 只有用户配置了字体路径才加载外部字体
+    // 只有用户配置了字体路径且文件存在才加载外部字体
     if(!Config::font_path.empty()&&Config::FileExists(Config::font_path.c_str())){
         ImFont*fi=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(32),&cfg,ranges);
         ImFont*fu=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(26),&cfg,ranges);
         ImFont*fd=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(32),&cfg,ranges);
+        // 所有字体必须加载成功才替换，否则保留内置字体
         if(fi&&fu&&fd){
             g_FontIsland=fi;g_UIFont=fu;g_DanmuFont=fd;
             g_FontMsg="External font loaded";
             LOGI("External font loaded: %s",Config::font_path.c_str());
         }else{
             g_FontMsg="External font failed, using built-in";
-            LOGW("External font failed, using built-in");
+            LOGW("External font failed, using built-in (fi=%p, fu=%p, fd=%p)",fi,fu,fd);
+            // 确保内置字体可用
+            if(!g_UIFont){LOGW("UIFont is null, rebuilding from built-in");g_UIFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(26),&cfg,io.Fonts->GetGlyphRangesDefault());}
+            if(!g_FontIsland){g_FontIsland=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());}
+            if(!g_DanmuFont){g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());}
         }
     }else{
         LOGI("Using built-in font (no external font configured)");
+    }
+    // 最终安全检查：确保所有字体指针有效
+    if(!g_UIFont||!g_FontIsland||!g_DanmuFont){
+        LOGE("CRITICAL: Font is still null! Rebuilding all fonts!");
+        io.Fonts->Clear();
+        cfg.FontDataOwnedByAtlas=false;
+        g_FontIsland=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());
+        g_UIFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(26),&cfg,io.Fonts->GetGlyphRangesDefault());
+        g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());
     }
     if(g_UIFont)io.FontDefault=g_UIFont;
     ImGui_ImplAndroid_Init(nullptr);ImGui_ImplOpenGL3_Init("#version 300 es");
