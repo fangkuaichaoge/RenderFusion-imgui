@@ -1,4 +1,4 @@
-﻿﻿#include <jni.h>
+#include <jni.h>
 #include <android/input.h>
 #include <android/log.h>
 #include <EGL/egl.h>
