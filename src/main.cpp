@@ -1067,49 +1067,55 @@ static void Setup(){
     LOGI("DanmuGL setup...");ImGui::CreateContext();ImGuiIO&io=ImGui::GetIO();
     io.IniFilename=nullptr;io.LogFilename=nullptr;
     g_Dpi=(float)g_H/900.0f;if(g_Dpi<1.0f)g_Dpi=1.0f;if(g_Dpi>2.5f)g_Dpi=2.5f;
-    io.Fonts->Clear();ImFontConfig cfg;cfg.FontDataOwnedByAtlas=false;cfg.OversampleH=cfg.OversampleV=2;cfg.PixelSnapH=true;
-    // 内置字体作为默认字体
-    g_FontIsland=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());
-    g_UIFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(26),&cfg,io.Fonts->GetGlyphRangesDefault());
-    g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());
+    io.Fonts->Clear();
+    // 内置字体配置：内存字体需要自己管理数据
+    ImFontConfig cfg_mem;cfg_mem.FontDataOwnedByAtlas=false;cfg_mem.OversampleH=cfg_mem.OversampleV=2;cfg_mem.PixelSnapH=true;
+    // 文件字体配置：让ImGui管理
+    ImFontConfig cfg_file;cfg_file.FontDataOwnedByAtlas=true;cfg_file.OversampleH=cfg_file.OversampleV=2;cfg_file.PixelSnapH=true;
     const ImWchar* ranges=io.Fonts->GetGlyphRangesChineseFull();
-    g_FontMsg="Using built-in font";
-    // 只有用户配置了字体路径且文件存在才加载外部字体
+    // 阶段1：优先加载外部字体（如果配置了且存在）
+    bool use_external=false;
     if(!Config::font_path.empty()&&Config::FileExists(Config::font_path.c_str())){
-        ImFont*fi=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(32),&cfg,ranges);
-        ImFont*fu=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(26),&cfg,ranges);
-        ImFont*fd=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(32),&cfg,ranges);
-        // 所有字体必须加载成功才替换，否则保留内置字体
+        ImFont*fi=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(32),&cfg_file,ranges);
+        ImFont*fu=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(26),&cfg_file,ranges);
+        ImFont*fd=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(32),&cfg_file,ranges);
         if(fi&&fu&&fd){
             g_FontIsland=fi;g_UIFont=fu;g_DanmuFont=fd;
             g_FontMsg="External font loaded";
+            use_external=true;
             LOGI("External font loaded: %s",Config::font_path.c_str());
         }else{
-            g_FontMsg="External font failed, using built-in";
-            LOGW("External font failed, using built-in (fi=%p, fu=%p, fd=%p)",fi,fu,fd);
-            // 确保内置字体可用
-            if(!g_UIFont){LOGW("UIFont is null, rebuilding from built-in");g_UIFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(26),&cfg,io.Fonts->GetGlyphRangesDefault());}
-            if(!g_FontIsland){g_FontIsland=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());}
-            if(!g_DanmuFont){g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());}
+            LOGW("External font failed, falling back to built-in");
         }
-    }else{
-        LOGI("Using built-in font (no external font configured)");
     }
-    // 最终安全检查：确保所有字体指针有效
+    // 阶段2：加载内置字体作为回退（如果外部字体失败或未配置）
+    if(!use_external){
+        g_FontIsland=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg_mem,io.Fonts->GetGlyphRangesDefault());
+        g_UIFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(26),&cfg_mem,io.Fonts->GetGlyphRangesDefault());
+        g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg_mem,io.Fonts->GetGlyphRangesDefault());
+        g_FontMsg="Using built-in font";
+        LOGI("Using built-in font");
+    }
+    // 阶段3：强制构建字体纹理（必须调用！）
+    unsigned char*tex_pixels=nullptr;int tex_w=0,tex_h=0;
+    io.Fonts->GetTexDataAsRGBA32(&tex_pixels,&tex_w,&tex_h);
+    io.Fonts->Build();
+    // 阶段4：安全检查
     if(!g_UIFont||!g_FontIsland||!g_DanmuFont){
-        LOGE("CRITICAL: Font is still null! Rebuilding all fonts!");
+        LOGE("CRITICAL: Font is null! Rebuilding from built-in only!");
         io.Fonts->Clear();
-        cfg.FontDataOwnedByAtlas=false;
-        g_FontIsland=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());
-        g_UIFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(26),&cfg,io.Fonts->GetGlyphRangesDefault());
-        g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());
+        g_FontIsland=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg_mem,io.Fonts->GetGlyphRangesDefault());
+        g_UIFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(26),&cfg_mem,io.Fonts->GetGlyphRangesDefault());
+        g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg_mem,io.Fonts->GetGlyphRangesDefault());
+        io.Fonts->Build();
+        g_FontMsg="Forced built-in font";
     }
     if(g_UIFont)io.FontDefault=g_UIFont;
     ImGui_ImplAndroid_Init(nullptr);ImGui_ImplOpenGL3_Init("#version 300 es");
     Logger::Init();
     SetupStyle();g_Init=true;g_LastT=ImGui::GetTime();
     if(Config::running)AIClient::Start();
-    LOGI("DanmuGL setup complete, DPI: %.2f", g_Dpi);
+    LOGI("DanmuGL setup complete, DPI: %.2f, Font: %s", g_Dpi, g_FontMsg.c_str());
 }
 
 static void RenderUI(){
