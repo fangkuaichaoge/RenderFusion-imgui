@@ -1,4 +1,4 @@
-#include <jni.h>
+﻿﻿#include <jni.h>
 #include <android/input.h>
 #include <android/log.h>
 #include <EGL/egl.h>
@@ -141,7 +141,7 @@ namespace Config {
 const char* CONFIG_PATH_PRIMARY = "/storage/emulated/0/games/DanmuGL/config.json";
 const char* CONFIG_PATH_SECONDARY = "/storage/emulated/0/Android/media/com.mojang.minecraftpe/DanmuGL/config.json";
 const char* CONFIG_PATH_THIRD = "/storage/emulated/0/Android/media/org.levimc.launcher/DanmuGL/config.json";
-std::string api_key="",api_base="https://api.siliconflow.cn/v1/chat/completions",model_name="Qwen/Qwen2.5-VL-7B-Instruct",font_path="";
+std::string api_key="",api_base="",model_name="",font_path="";
 int capture_interval=3,max_danmu_count=80,danmu_per_request=8,ai_max_tokens=200; float danmu_speed=200.0f,danmu_font_size=26.0f,danmu_opacity=1.0f,ai_temperature=0.6f; int prompt_lang=1, persona=0; bool running=false;
 const char* current_config_path=nullptr;
 void EnsureConfigDir(){
@@ -164,7 +164,9 @@ bool SaveConfig(){
     j["api_key"]=api_key;j["api_base"]=api_base;j["model_name"]=model_name;j["font_path"]=font_path;
     j["capture_interval"]=capture_interval;j["max_danmu_count"]=max_danmu_count;j["danmu_per_request"]=danmu_per_request;
     j["danmu_speed"]=danmu_speed;j["danmu_font_size"]=danmu_font_size;j["danmu_opacity"]=danmu_opacity;
-    j["ai_temperature"]=ai_temperature;j["ai_max_tokens"]=ai_max_tokens;
+    // 格式化温度到两位小数避免精度问题
+    float temp_rounded = floor(ai_temperature * 100.0f + 0.5f) / 100.0f;
+    j["ai_temperature"]=temp_rounded;j["ai_max_tokens"]=ai_max_tokens;
     j["prompt_lang"]=prompt_lang;j["persona"]=persona;j["running"]=running;
     std::ofstream f(path); if(!f.is_open())return false; f<<j.dump(4); f.close(); return true;
 }
@@ -1067,44 +1069,28 @@ static void Setup(){
     io.IniFilename=nullptr;io.LogFilename=nullptr;
     g_Dpi=(float)g_H/900.0f;if(g_Dpi<1.0f)g_Dpi=1.0f;if(g_Dpi>2.5f)g_Dpi=2.5f;
     io.Fonts->Clear();ImFontConfig cfg;cfg.FontDataOwnedByAtlas=false;cfg.OversampleH=cfg.OversampleV=2;cfg.PixelSnapH=true;
+    // 内置字体作为默认字体
     g_FontIsland=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());
     g_UIFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(26),&cfg,io.Fonts->GetGlyphRangesDefault());
     g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());
     const ImWchar* ranges=io.Fonts->GetGlyphRangesChineseFull();
-    ImFont*built_in_island=g_FontIsland;
-    ImFont*built_in_ui=g_UIFont;
-    ImFont*built_in_danmu=g_DanmuFont;
-    std::string font_to_load=Config::font_path;
-    if(font_to_load.empty()||!Config::FileExists(font_to_load.c_str())){
-        std::string sys_font=FindSystemFont();
-        if(!sys_font.empty()){
-            font_to_load=sys_font;
-            if(Config::font_path.empty()){
-                Config::font_path=sys_font;
-                Config::SaveConfig();
-            }
-            LOGI("Auto-detected system font: %s",sys_font.c_str());
-        }
-    }
-    if(!font_to_load.empty()&&Config::FileExists(font_to_load.c_str())){
-        ImFont*fi=io.Fonts->AddFontFromFileTTF(font_to_load.c_str(),Scale(32),&cfg,ranges);
-        ImFont*fu=io.Fonts->AddFontFromFileTTF(font_to_load.c_str(),Scale(26),&cfg,ranges);
-        ImFont*fd=io.Fonts->AddFontFromFileTTF(font_to_load.c_str(),Scale(32),&cfg,ranges);
+    g_FontMsg="Using built-in font";
+    // 只有用户配置了字体路径才加载外部字体
+    if(!Config::font_path.empty()&&Config::FileExists(Config::font_path.c_str())){
+        ImFont*fi=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(32),&cfg,ranges);
+        ImFont*fu=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(26),&cfg,ranges);
+        ImFont*fd=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(32),&cfg,ranges);
         if(fi&&fu&&fd){
             g_FontIsland=fi;g_UIFont=fu;g_DanmuFont=fd;
-            g_FontMsg="Font loaded OK";
-            LOGI("External font loaded: %s",font_to_load.c_str());
+            g_FontMsg="External font loaded";
+            LOGI("External font loaded: %s",Config::font_path.c_str());
         }else{
-            g_FontMsg="External font load failed, using built-in font";
-            LOGW("External font failed, falling back to built-in");
+            g_FontMsg="External font failed, using built-in";
+            LOGW("External font failed, using built-in");
         }
     }else{
-        g_FontMsg="No external font, using built-in font";
-        LOGI("No external font found, using built-in font");
+        LOGI("Using built-in font (no external font configured)");
     }
-    if(!g_UIFont)g_UIFont=built_in_ui;
-    if(!g_FontIsland)g_FontIsland=built_in_island;
-    if(!g_DanmuFont)g_DanmuFont=built_in_danmu;
     if(g_UIFont)io.FontDefault=g_UIFont;
     ImGui_ImplAndroid_Init(nullptr);ImGui_ImplOpenGL3_Init("#version 300 es");
     Logger::Init();
