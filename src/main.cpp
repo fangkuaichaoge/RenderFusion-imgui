@@ -1086,7 +1086,7 @@ static void Setup(){
     ImFontConfig cfg;cfg.FontDataOwnedByAtlas=false;
     cfg.OversampleH=cfg.OversampleV=1;
     
-    const ImWchar* ranges=io.Fonts->GetGlyphRangesDefault();
+    const ImWchar* ranges=io.Fonts->GetGlyphRangesChineseFull();
     
     // 阶段1: 加载内置字体
     g_FontIsland=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,ranges);
