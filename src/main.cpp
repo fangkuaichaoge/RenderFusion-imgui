@@ -1,4 +1,4 @@
-﻿﻿﻿#include <jni.h>
+#include <jni.h>
 #include <android/input.h>
 #include <android/log.h>
 #include <EGL/egl.h>
@@ -158,6 +158,16 @@ const char* FindConfigPath(){
     if(FileExists(CONFIG_PATH_THIRD))return CONFIG_PATH_THIRD;
     return nullptr;
 }
+bool SaveConfig(){
+    EnsureConfigDir(); const char* path = (current_config_path!=nullptr) ? current_config_path : CONFIG_PATH_PRIMARY;
+    nlohmann::json j;
+    j["api_key"]=api_key;j["api_base"]=api_base;j["model_name"]=model_name;j["font_path"]=font_path;
+    j["capture_interval"]=capture_interval;j["max_danmu_count"]=max_danmu_count;j["danmu_per_request"]=danmu_per_request;
+    j["danmu_speed"]=danmu_speed;j["danmu_font_size"]=danmu_font_size;j["danmu_opacity"]=danmu_opacity;
+    j["ai_temperature"]=ai_temperature;j["ai_max_tokens"]=ai_max_tokens;
+    j["prompt_lang"]=prompt_lang;j["persona"]=persona;j["running"]=running;
+    std::ofstream f(path); if(!f.is_open())return false; f<<j.dump(4); f.close(); return true;
+}
 bool LoadConfig(){
     current_config_path = FindConfigPath();
     if(current_config_path==nullptr){
@@ -183,16 +193,6 @@ bool LoadConfig(){
     if(j.contains("persona"))persona=j["persona"];
     if(j.contains("running"))running=j["running"];
     return true;
-}
-bool SaveConfig(){
-    EnsureConfigDir(); const char* path = (current_config_path!=nullptr) ? current_config_path : CONFIG_PATH_PRIMARY;
-    nlohmann::json j;
-    j["api_key"]=api_key;j["api_base"]=api_base;j["model_name"]=model_name;j["font_path"]=font_path;
-    j["capture_interval"]=capture_interval;j["max_danmu_count"]=max_danmu_count;j["danmu_per_request"]=danmu_per_request;
-    j["danmu_speed"]=danmu_speed;j["danmu_font_size"]=danmu_font_size;j["danmu_opacity"]=danmu_opacity;
-    j["ai_temperature"]=ai_temperature;j["ai_max_tokens"]=ai_max_tokens;
-    j["prompt_lang"]=prompt_lang;j["persona"]=persona;j["running"]=running;
-    std::ofstream f(path); if(!f.is_open())return false; f<<j.dump(4); f.close(); return true;
 }
 }
 
