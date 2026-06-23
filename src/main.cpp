@@ -1,4 +1,4 @@
-#include <jni.h>
+﻿﻿#include <jni.h>
 #include <android/input.h>
 #include <android/log.h>
 #include <EGL/egl.h>
@@ -189,7 +189,7 @@ bool LoadConfig(){
     if(j.contains("danmu_speed"))danmu_speed=j["danmu_speed"];
     if(j.contains("danmu_font_size"))danmu_font_size=j["danmu_font_size"];
     if(j.contains("danmu_opacity"))danmu_opacity=j["danmu_opacity"];
-    if(j.contains("ai_temperature"))ai_temperature=j["ai_temperature"];
+    if(j.contains("ai_temperature")){float t=j["ai_temperature"];ai_temperature=floor(t*100.0f+0.5f)/100.0f;}
     if(j.contains("ai_max_tokens"))ai_max_tokens=j["ai_max_tokens"];
     if(j.contains("prompt_lang"))prompt_lang=j["prompt_lang"];
     if(j.contains("persona"))persona=j["persona"];
