@@ -1,4 +1,4 @@
-#include <jni.h>
+﻿#include <jni.h>
 #include <android/input.h>
 #include <android/log.h>
 #include <EGL/egl.h>
@@ -33,7 +33,9 @@
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/error.h"
-#include "mbedtls/x509_crt.h"
+#include <nlohmann/json.hpp>
+
+#include <zlib.h>
 
 #include "pl/Hook.h"
 #include "pl/Gloss.h"
@@ -42,6 +44,7 @@
 #include "ImGui/backends/imgui_impl_opengl3.h"
 #include "ImGui/backends/imgui_impl_android.h"
 #include "fonts_data.h"
+#include "cnfonts_data.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -1075,6 +1078,115 @@ static long GetFileSize(const char* path){
     FILE*f=fopen(path,"rb");if(!f)return -1;fseek(f,0,SEEK_END);long s=ftell(f);fclose(f);return s;
 }
 
+// WOFF -> SFNT/TTF 解压:解析 WOFF 头和表目录,对每个表 zlib inflate,
+// 然后按 SFNT 顺序重建字体文件,供 ImGui AddFontFromMemoryTTF 使用。
+// 失败时返回空 vector,调用方需回退到内置拉丁字体。
+static const std::vector<unsigned char>& GetBuiltinChineseFont(){
+    static std::vector<unsigned char> ttf;
+    static bool initialized=false;
+    if(initialized)return ttf;
+    initialized=true;
+
+    const unsigned char* woff=fusionpixel_subset_woff.data();
+    size_t woffSize=fusionpixel_subset_woff.size();
+    if(woffSize<44){LOGI("CN font: WOFF too small");return ttf;}
+
+    auto rd32=[&](size_t o)->uint32_t{
+        return (uint32_t)woff[o]|((uint32_t)woff[o+1]<<8)|((uint32_t)woff[o+2]<<16)|((uint32_t)woff[o+3]<<24);
+    };
+    auto rd16=[&](size_t o)->uint16_t{
+        return (uint16_t)woff[o]|((uint16_t)woff[o+1]<<8);
+    };
+
+    uint32_t sig=rd32(0);
+    if(sig!=0x774F4646u){LOGI("CN font: bad WOFF sig 0x%08X",sig);return ttf;}
+
+    uint32_t flavor=rd32(4);
+    uint16_t numTables=rd16(12);
+    uint32_t totalSfntSize=rd32(16);
+    (void)totalSfntSize;
+
+    LOGI("CN font: WOFF numTables=%u flavor=0x%08X size=%zu",numTables,flavor,woffSize);
+
+    // 解析 WOFF 表目录
+    struct WTable{uint32_t tag,offset,compLen,origLen,check;};
+    std::vector<WTable> wt(numTables);
+    for(uint16_t i=0;i<numTables;i++){
+        size_t base=44+(size_t)i*20;
+        if(base+20>woffSize){LOGI("CN font: WOFF dir oob");return ttf;}
+        wt[i].tag=rd32(base);
+        wt[i].offset=rd32(base+4);
+        wt[i].compLen=rd32(base+8);
+        wt[i].origLen=rd32(base+12);
+        wt[i].check=rd32(base+16);
+    }
+
+    // 构造 SFNT 头
+    ttf.reserve(totalSfntSize?totalSfntSize:woffSize*2);
+    ttf.resize(12);
+    ttf[0]=(unsigned char)(flavor>>24);ttf[1]=(unsigned char)(flavor>>16);
+    ttf[2]=(unsigned char)(flavor>>8);ttf[3]=(unsigned char)flavor;
+    ttf[4]=(unsigned char)(numTables>>8);ttf[5]=(unsigned char)numTables;
+
+    // 找 numTables 的最高位作为 entrySelector
+    uint16_t entry=0;uint16_t n=numTables;
+    while(n>>1){entry++;n>>=1;}
+    uint16_t searchRange=(uint16_t)(1<<entry)*16;
+    uint16_t rangeShift=(uint16_t)(numTables*16-searchRange);
+    ttf[6]=(unsigned char)(searchRange>>8);ttf[7]=(unsigned char)searchRange;
+    ttf[8]=(unsigned char)(entry>>8);ttf[9]=(unsigned char)entry;
+    ttf[10]=(unsigned char)(rangeShift>>8);ttf[11]=(unsigned char)rangeShift;
+
+    // 表数据起始偏移
+    size_t dataStart=12+(size_t)numTables*16;
+    // 对齐到 4
+    size_t cur=dataStart;
+
+    // 写表目录
+    for(uint16_t i=0;i<numTables;i++){
+        size_t dbase=12+(size_t)i*16;
+        ttf[dbase+0]=(unsigned char)(wt[i].tag>>24);ttf[dbase+1]=(unsigned char)(wt[i].tag>>16);
+        ttf[dbase+2]=(unsigned char)(wt[i].tag>>8);ttf[dbase+3]=(unsigned char)wt[i].tag;
+        ttf[dbase+4]=(unsigned char)(wt[i].check>>24);ttf[dbase+5]=(unsigned char)(wt[i].check>>16);
+        ttf[dbase+6]=(unsigned char)(wt[i].check>>8);ttf[dbase+7]=(unsigned char)wt[i].check;
+        ttf[dbase+8]=(unsigned char)(cur>>24);ttf[dbase+9]=(unsigned char)(cur>>16);
+        ttf[dbase+10]=(unsigned char)(cur>>8);ttf[dbase+11]=(unsigned char)cur;
+        ttf[dbase+12]=(unsigned char)(wt[i].origLen>>24);ttf[dbase+13]=(unsigned char)(wt[i].origLen>>16);
+        ttf[dbase+14]=(unsigned char)(wt[i].origLen>>8);ttf[dbase+15]=(unsigned char)wt[i].origLen;
+    }
+
+    // 写表数据(必要时 inflate)
+    for(uint16_t i=0;i<numTables;i++){
+        size_t off=wt[i].offset;size_t cLen=wt[i].compLen;size_t oLen=wt[i].origLen;
+        if(off+cLen>woffSize){LOGI("CN font: table %u oob",i);ttf.clear();return ttf;}
+        if(cLen==oLen){
+            ttf.insert(ttf.end(),woff+off,woff+off+cLen);
+        }else{
+            std::vector<unsigned char> out(oLen);
+            z_stream strm{};
+            strm.next_in=(Bytef*)(woff+off);
+            strm.avail_in=(uInt)cLen;
+            strm.next_out=out.data();
+            strm.avail_out=(uInt)oLen;
+            if(inflateInit(&strm)!=Z_OK){LOGI("CN font: inflateInit fail");ttf.clear();return ttf;}
+            int ret=inflate(&strm,Z_FINISH);
+            inflateEnd(&strm);
+            if(ret!=Z_STREAM_END||strm.total_out!=oLen){
+                LOGI("CN font: inflate fail ret=%d got=%lu expect=%zu",ret,(unsigned long)strm.total_out,oLen);
+                ttf.clear();return ttf;
+            }
+            ttf.insert(ttf.end(),out.begin(),out.end());
+        }
+        // 4 字节对齐
+        size_t pad=(4-(ttf.size()%4))%4;
+        for(size_t k=0;k<pad;k++)ttf.push_back(0);
+        cur=ttf.size();
+    }
+
+    LOGI("CN font: SFNT ready size=%zu",ttf.size());
+    return ttf;
+}
+
 static void Setup(){
     if(g_Init||g_W<=0||g_H<=0)return;
     __android_log_print(ANDROID_LOG_INFO,"DanmuGL","Setup() font_type=%d",Config::font_type);
@@ -1090,11 +1202,23 @@ static void Setup(){
     const ImWchar* ranges_default=io.Fonts->GetGlyphRangesDefault();
     // 外部字体用中文全字符集
     const ImWchar* ranges_chinese=io.Fonts->GetGlyphRangesChineseFull();
-    
+
     // 阶段1: 加载内置字体
-    g_FontIsland=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,ranges_default);
-    g_UIFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(26),&cfg,ranges_default);
-    g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,ranges_default);
+    // 优先使用解压后的内置中文 WOFF 字体(fusionpixel_subset_woff),
+    // 失败时回退到 inter_medium(仅拉丁字符)。
+    const std::vector<unsigned char>& cn_ttf=GetBuiltinChineseFont();
+    const unsigned char* builtin_data=nullptr;int builtin_size=0;const ImWchar* builtin_ranges=ranges_default;
+    if(!cn_ttf.empty()){
+        builtin_data=cn_ttf.data();builtin_size=(int)cn_ttf.size();
+        builtin_ranges=ranges_chinese;
+        __android_log_print(ANDROID_LOG_INFO,"DanmuGL","Using built-in CN font (%d bytes)",builtin_size);
+    }else{
+        builtin_data=inter_medium.data();builtin_size=(int)inter_medium.size();
+        __android_log_print(ANDROID_LOG_WARN,"DanmuGL","Built-in CN font unavailable, fallback to inter_medium");
+    }
+    g_FontIsland=io.Fonts->AddFontFromMemoryTTF((void*)builtin_data,builtin_size,Scale(32),&cfg,builtin_ranges);
+    g_UIFont=io.Fonts->AddFontFromMemoryTTF((void*)builtin_data,builtin_size,Scale(26),&cfg,builtin_ranges);
+    g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)builtin_data,builtin_size,Scale(32),&cfg,builtin_ranges);
     __android_log_print(ANDROID_LOG_INFO,"DanmuGL","Built-in: i=%p u=%p d=%p",g_FontIsland,g_UIFont,g_DanmuFont);
     
     // 阶段2: 如果font_type=1,加载外部字体(带中文)
