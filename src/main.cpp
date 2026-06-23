@@ -1,4 +1,4 @@
-﻿#include <jni.h>
+﻿﻿﻿#include <jni.h>
 #include <android/input.h>
 #include <android/log.h>
 #include <EGL/egl.h>
@@ -138,12 +138,34 @@ static float Scale(float v){return v*g_Dpi;}
 struct Island{ImVec2 pos;bool drag,dragS;ImVec2 dragOff,dragSt;}g_Isl={ImVec2(-1,-1),false,false,ImVec2(0,0),ImVec2(0,0)};
 
 namespace Config {
-const char* CONFIG_PATH = "/storage/emulated/0/games/DanmuGL/config.json";
+const char* CONFIG_PATH_PRIMARY = "/storage/emulated/0/games/DanmuGL/config.json";
+const char* CONFIG_PATH_SECONDARY = "/storage/emulated/0/Android/media/com.mojang.minecraftpe/DanmuGL/config.json";
+const char* CONFIG_PATH_THIRD = "/storage/emulated/0/Android/media/org.levimc.launcher/DanmuGL/config.json";
 std::string api_key="",api_base="https://api.siliconflow.cn/v1/chat/completions",model_name="Qwen/Qwen2.5-VL-7B-Instruct",font_path="";
 int capture_interval=3,max_danmu_count=80,danmu_per_request=8,ai_max_tokens=200; float danmu_speed=200.0f,danmu_font_size=26.0f,danmu_opacity=1.0f,ai_temperature=0.6f; int prompt_lang=1, persona=0; bool running=false;
-void EnsureConfigDir(){system("mkdir -p /storage/emulated/0/games/DanmuGL");}
+const char* current_config_path=nullptr;
+void EnsureConfigDir(){
+    system("mkdir -p /storage/emulated/0/games/DanmuGL");
+    system("mkdir -p /storage/emulated/0/Android/media/com.mojang.minecraftpe/DanmuGL");
+    system("mkdir -p /storage/emulated/0/Android/media/org.levimc.launcher/DanmuGL");
+}
+bool FileExists(const char* path){
+    FILE*f=fopen(path,"r");if(f){fclose(f);return true;}return false;
+}
+const char* FindConfigPath(){
+    if(FileExists(CONFIG_PATH_PRIMARY))return CONFIG_PATH_PRIMARY;
+    if(FileExists(CONFIG_PATH_SECONDARY))return CONFIG_PATH_SECONDARY;
+    if(FileExists(CONFIG_PATH_THIRD))return CONFIG_PATH_THIRD;
+    return nullptr;
+}
 bool LoadConfig(){
-    std::ifstream f(CONFIG_PATH); if(!f.is_open())return false;
+    current_config_path = FindConfigPath();
+    if(current_config_path==nullptr){
+        LOGI("No config file found, generating default config at primary path");
+        current_config_path = CONFIG_PATH_PRIMARY;
+        return SaveConfig();
+    }
+    std::ifstream f(current_config_path); if(!f.is_open())return false;
     nlohmann::json j; try{f>>j;f.close();}catch(...){f.close();return false;}
     if(j.contains("api_key"))api_key=j["api_key"].get<std::string>();
     if(j.contains("api_base"))api_base=j["api_base"].get<std::string>();
@@ -163,13 +185,14 @@ bool LoadConfig(){
     return true;
 }
 bool SaveConfig(){
-    EnsureConfigDir(); nlohmann::json j;
+    EnsureConfigDir(); const char* path = (current_config_path!=nullptr) ? current_config_path : CONFIG_PATH_PRIMARY;
+    nlohmann::json j;
     j["api_key"]=api_key;j["api_base"]=api_base;j["model_name"]=model_name;j["font_path"]=font_path;
     j["capture_interval"]=capture_interval;j["max_danmu_count"]=max_danmu_count;j["danmu_per_request"]=danmu_per_request;
     j["danmu_speed"]=danmu_speed;j["danmu_font_size"]=danmu_font_size;j["danmu_opacity"]=danmu_opacity;
     j["ai_temperature"]=ai_temperature;j["ai_max_tokens"]=ai_max_tokens;
     j["prompt_lang"]=prompt_lang;j["persona"]=persona;j["running"]=running;
-    std::ofstream f(CONFIG_PATH); if(!f.is_open())return false; f<<j.dump(4); f.close(); return true;
+    std::ofstream f(path); if(!f.is_open())return false; f<<j.dump(4); f.close(); return true;
 }
 }
 
@@ -1023,7 +1046,6 @@ static void DrawUI(){
     if(g_UIFont)ImGui::PopFont();
 }
 
-static bool FileExists(const char* path){FILE*f=fopen(path,"r");if(f){fclose(f);return true;}return false;}
 static std::string FindSystemFont(){
     const char* candidates[]={
         "/system/fonts/NotoSansCJK-Regular.ttc",
@@ -1036,7 +1058,7 @@ static std::string FindSystemFont(){
         "/product/fonts/NotoSansCJK-Regular.ttc",
         "/vendor/fonts/NotoSansCJK-Regular.ttc"
     };
-    for(const char* p : candidates){if(FileExists(p))return std::string(p);}
+    for(const char* p : candidates){if(Config::FileExists(p))return std::string(p);}
     return "";
 }
 static void Setup(){
@@ -1049,22 +1071,40 @@ static void Setup(){
     g_UIFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(26),&cfg,io.Fonts->GetGlyphRangesDefault());
     g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,io.Fonts->GetGlyphRangesDefault());
     const ImWchar* ranges=io.Fonts->GetGlyphRangesChineseFull();
+    ImFont*built_in_island=g_FontIsland;
+    ImFont*built_in_ui=g_UIFont;
+    ImFont*built_in_danmu=g_DanmuFont;
     std::string font_to_load=Config::font_path;
-    if(font_to_load.empty()||!FileExists(font_to_load.c_str())){
+    if(font_to_load.empty()||!Config::FileExists(font_to_load.c_str())){
         std::string sys_font=FindSystemFont();
         if(!sys_font.empty()){
             font_to_load=sys_font;
-            if(Config::font_path.empty())Config::font_path=sys_font;
+            if(Config::font_path.empty()){
+                Config::font_path=sys_font;
+                Config::SaveConfig();
+            }
             LOGI("Auto-detected system font: %s",sys_font.c_str());
         }
     }
-    if(!font_to_load.empty()&&FileExists(font_to_load.c_str())){
+    if(!font_to_load.empty()&&Config::FileExists(font_to_load.c_str())){
         ImFont*fi=io.Fonts->AddFontFromFileTTF(font_to_load.c_str(),Scale(32),&cfg,ranges);
         ImFont*fu=io.Fonts->AddFontFromFileTTF(font_to_load.c_str(),Scale(26),&cfg,ranges);
         ImFont*fd=io.Fonts->AddFontFromFileTTF(font_to_load.c_str(),Scale(32),&cfg,ranges);
-        if(fi&&fu&&fd){g_FontIsland=fi;g_UIFont=fu;g_DanmuFont=fd;g_FontMsg="Font loaded OK";}
-        else{g_FontMsg="Font load failed, using built-in font";}
-    }else{g_FontMsg="No Chinese font found, Chinese danmaku may not display";}
+        if(fi&&fu&&fd){
+            g_FontIsland=fi;g_UIFont=fu;g_DanmuFont=fd;
+            g_FontMsg="Font loaded OK";
+            LOGI("External font loaded: %s",font_to_load.c_str());
+        }else{
+            g_FontMsg="External font load failed, using built-in font";
+            LOGW("External font failed, falling back to built-in");
+        }
+    }else{
+        g_FontMsg="No external font, using built-in font";
+        LOGI("No external font found, using built-in font");
+    }
+    if(!g_UIFont)g_UIFont=built_in_ui;
+    if(!g_FontIsland)g_FontIsland=built_in_island;
+    if(!g_DanmuFont)g_DanmuFont=built_in_danmu;
     if(g_UIFont)io.FontDefault=g_UIFont;
     ImGui_ImplAndroid_Init(nullptr);ImGui_ImplOpenGL3_Init("#version 300 es");
     Logger::Init();
