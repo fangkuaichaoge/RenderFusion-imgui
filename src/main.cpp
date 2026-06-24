@@ -1,4 +1,4 @@
-#include <jni.h>
+﻿#include <jni.h>
 #include <android/input.h>
 #include <android/log.h>
 #include <EGL/egl.h>
@@ -42,6 +42,7 @@
 #include "ImGui/backends/imgui_impl_opengl3.h"
 #include "ImGui/backends/imgui_impl_android.h"
 #include "fonts_data.h"
+#include "mcfonts_data.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -142,7 +143,7 @@ const char* CONFIG_PATH_PRIMARY = "/storage/emulated/0/games/DanmuGL/config.json
 const char* CONFIG_PATH_SECONDARY = "/storage/emulated/0/Android/media/com.mojang.minecraftpe/DanmuGL/config.json";
 const char* CONFIG_PATH_THIRD = "/storage/emulated/0/Android/media/org.levimc.launcher/DanmuGL/config.json";
 std::string api_key="",api_base="",model_name="",font_path="";
-int font_type=0; // 0=内置字体, 1=外部字体
+int font_type=0; // 0=内置字体1(Inter), 1=内置字体2(MC), 2=外部字体
 int capture_interval=3,max_danmu_count=80,danmu_per_request=8,ai_max_tokens=200; float danmu_speed=200.0f,danmu_font_size=26.0f,danmu_opacity=1.0f,ai_temperature=0.0f; int prompt_lang=1, persona=0; bool running=false;
 const char* current_config_path=nullptr;
 void EnsureConfigDir(){
@@ -339,7 +340,7 @@ static const PersonaPrompt PERSONAS[] = {
     {
         "高压吐槽型", "Sharp Roast",
         "【最高优先级-死规则】这是Minecraft游戏直播截图。\n\n只许评论你清晰可见、一眼就能看到的具体内容。看不清楚就只发短情绪词/感叹/问号，绝对不许主动猜任何物品、生物、方块、事件的名字。\n\n你就是看直播随手敲键盘的普通观众，不是AI，不许写完整通顺句子，不许解释画面，不许总结，不许给建议。\n\n【死规则，违反就错】\n- 看不到的东西绝对不许提它的名字！\n- 拿不准就发短情绪词或者问号，宁可不说话也不许瞎编\n- N条弹幕必须每一条内容都不一样，绝对禁止重复！\n- 最多一半弹幕可以说具体内容，剩下至少一半必须是纯情绪/感叹，不描述具体东西\n- 越短越好，1-5个字最佳，乱敲键盘重复字刷屏都允许\n\n【绝对禁止】\n- 编造任何画面里没有的东西\n- 重复内容\n- 提任何其他游戏\n- AI腔完整句子、解释画面\n- emoji、序号、解释、开场白、markdown",
-        "【高压吐槽型】输出正好N条中文Minecraft直播弹幕，每行一条，除此之外啥都别写。\n\n规则：\n1. 最多一半弹幕说你清晰看到的具体Minecraft画面内容\n2. 剩下至少一半必须是纯短情绪词/感叹/问号，不描述具体东西\n3. 绝对不许瞎猜画面里没有的东西！拿不准就发短情绪或者问号，不要硬说是什么东西\n4. 每条必须完全不一样，绝对禁止重复！\n5. 口语化、短、碎，像真人随手敲的\n禁止序号、emoji、解释、完整长句子\nMinecraft看图发：",
+        "【高压吐槽型】输出正好N条中文Minecraft直播弹幕，每行一条，除此之外啥都别写。\n\n规则：\n1. 最多一半弹幕说你清晰看到的具体Minecraft画面内容\n3. 绝对不许瞎猜画面里没有的东西！拿不准就发短情绪或者问号，不要硬说是什么东西\n4. 每条必须完全不一样，绝对禁止重复！\n5. 口语化、短、碎，像真人随手敲的\n禁止序号、emoji、解释、完整长句子\nMinecraft看图发：",
         "[TOP PRIORITY - STRICT RULE] This is a MINECRAFT gameplay screenshot.\n\nYou may ONLY comment on things you can CLEARLY, OBVIOUSLY see right in the image. If you can't tell exactly what's happening, ONLY post short reaction words or ???. **NEVER guess the name of any item, mob, block, or event you cannot clearly identify.**\n\nYou are a real Twitch viewer spamming quick chat reactions. You are NOT an assistant. No full sentences, no explanations, no summaries, no advice.\n\n[STRICT RULES]\n- NEVER name anything you cannot CLEARLY see.\n- If unsure, post ??? or reactions only. Better to say nothing specific than to make it up\n- ALL N LINES MUST BE COMPLETELY DIFFERENT. ZERO REPEATS.\n- At LEAST half your lines must be pure reactions/exclamations, not describing content\n- Keep it SHORT: 1-4 words max. Spammy, all caps, typos allowed.\n\n[FORBIDDEN]\n- Hallucinating anything not visible\n- Repeating the same message\n- Mentioning any other game\n- Assistant/commentary tone, full sentences\n- Emojis, numbers, explanations, markdown",
         "Persona: Minecraft sharp roaster. Output EXACTLY N short English Twitch chat lines, ONE PER LINE, NO other text.\n\nRules:\n1. At most half your lines reference something CLEARLY visible\n2. At least half must be pure short reactions, no descriptions\n3. NEVER guess mobs/items you can't see. If unsure, just post ??? or reaction\n4. EVERY LINE DIFFERENT. NO DUPLICATES.\n5. Short, messy, spammy like real Twitch chat, max 4 words\nNO emojis, NO explanations, NO markdown, NO extra text.\nMinecraft chat:"
     },
@@ -924,9 +925,9 @@ static void DrawConfigWin(){
     strncpy(b3,Config::model_name.c_str(),sizeof(b3)-1);b3[sizeof(b3)-1]=0;
     ImGui::Text("Model Name");if(ImGui::InputText("##md",b3,sizeof(b3))){Config::model_name=b3;need_save=true;save_timer=1.0f;}ImGui::Spacing();
     ImGui::Text("Font Type");ImGui::Spacing();
-    if(ImGui::RadioButton("Built-in Font",&Config::font_type,0)){need_save=true;save_timer=1.0f;}ImGui::SameLine();
-    if(ImGui::RadioButton("External Font",&Config::font_type,1)){need_save=true;save_timer=1.0f;}ImGui::Spacing();
-    if(Config::font_type==1){
+    const char* font_items[]={"Built-in 1 (Inter)","Built-in 2 (MC Pixel)","External Font"};
+    if(ImGui::Combo("##fonttype",&Config::font_type,font_items,3)){need_save=true;save_timer=1.0f;}ImGui::Spacing();
+    if(Config::font_type==2){
         strncpy(b4,Config::font_path.c_str(),sizeof(b4)-1);b4[sizeof(b4)-1]=0;
         ImGui::Text("Font Path (TTF/TTC, <5MB)");if(ImGui::InputText("##fp",b4,sizeof(b4))){Config::font_path=b4;need_save=true;save_timer=1.0f;}
     }
@@ -1091,14 +1092,32 @@ static void Setup(){
     // 外部字体用中文全字符集
     const ImWchar* ranges_chinese=io.Fonts->GetGlyphRangesChineseFull();
     
-    // 阶段1: 加载内置字体
+    // 阶段1: 默认加载内置字体1(Inter)
     g_FontIsland=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,ranges_default);
     g_UIFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(26),&cfg,ranges_default);
     g_DanmuFont=io.Fonts->AddFontFromMemoryTTF((void*)inter_medium.data(),(int)inter_medium.size(),Scale(32),&cfg,ranges_default);
-    __android_log_print(ANDROID_LOG_INFO,"DanmuGL","Built-in: i=%p u=%p d=%p",g_FontIsland,g_UIFont,g_DanmuFont);
+    __android_log_print(ANDROID_LOG_INFO,"DanmuGL","Built-in 1 (Inter): i=%p u=%p d=%p",g_FontIsland,g_UIFont,g_DanmuFont);
     
-    // 阶段2: 如果font_type=1,加载外部字体(带中文)
-    if(Config::font_type==1&&!Config::font_path.empty()){
+    // 阶段2: 如果font_type=1, 加载内置字体2(MC像素字体, 带中文)
+    if(Config::font_type==1){
+        __android_log_print(ANDROID_LOG_INFO,"DanmuGL","Loading built-in 2 (MC font)");
+        
+        ImFont* f1=io.Fonts->AddFontFromMemoryTTF((void*)mc_font.data(),(int)mc_font.size(),Scale(32),&cfg,ranges_chinese);
+        ImFont* f2=io.Fonts->AddFontFromMemoryTTF((void*)mc_font.data(),(int)mc_font.size(),Scale(26),&cfg,ranges_chinese);
+        ImFont* f3=io.Fonts->AddFontFromMemoryTTF((void*)mc_font.data(),(int)mc_font.size(),Scale(32),&cfg,ranges_chinese);
+        
+        __android_log_print(ANDROID_LOG_INFO,"DanmuGL","MC font: f1=%p f2=%p f3=%p",f1,f2,f3);
+        
+        if(f1&&f2&&f3){
+            g_FontIsland=f1;g_UIFont=f2;g_DanmuFont=f3;
+            __android_log_print(ANDROID_LOG_INFO,"DanmuGL","Built-in 2 (MC) font OK");
+        }else{
+            __android_log_print(ANDROID_LOG_WARN,"DanmuGL","Built-in 2 (MC) font failed, use built-in 1");
+        }
+    }
+    
+    // 阶段3: 如果font_type=2,加载外部字体(带中文)
+    if(Config::font_type==2&&!Config::font_path.empty()){
         __android_log_print(ANDROID_LOG_INFO,"DanmuGL","Loading external: %s",Config::font_path.c_str());
         
         ImFont* f1=io.Fonts->AddFontFromFileTTF(Config::font_path.c_str(),Scale(32),nullptr,ranges_chinese);
@@ -1111,7 +1130,7 @@ static void Setup(){
             g_FontIsland=f1;g_UIFont=f2;g_DanmuFont=f3;
             __android_log_print(ANDROID_LOG_INFO,"DanmuGL","External font OK");
         }else{
-            __android_log_print(ANDROID_LOG_WARN,"DanmuGL","External font failed, use built-in");
+            __android_log_print(ANDROID_LOG_WARN,"DanmuGL","External font failed, use built-in 1");
         }
     }
     
